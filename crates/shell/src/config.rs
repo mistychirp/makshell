@@ -28,6 +28,8 @@ pub struct AppearanceConfig {
     pub match_apps: bool,
     /// `light`, `dark`, or `auto`, which goes by the sun: what apps look like.
     pub mode: String,
+    /// Give apps macOS's icons, from the MacOS-Like themes the shell builds.
+    pub macos_icons: bool,
 }
 
 impl Default for AppearanceConfig {
@@ -36,6 +38,7 @@ impl Default for AppearanceConfig {
             accent: crate::appearance::DEFAULT_ACCENT.to_owned(),
             match_apps: false,
             mode: String::from("dark"),
+            macos_icons: true,
         }
     }
 }
@@ -172,6 +175,11 @@ pub fn save_appearance_mode(mode: &str) -> io::Result<()> {
 /// Rewrites `[appearance] match_apps`, the same way.
 pub fn save_match_apps(on: bool) -> io::Result<()> {
     save("appearance", "match_apps", toml_edit::value(on))
+}
+
+/// Rewrites `[appearance] macos_icons`, the same way.
+pub fn save_macos_icons(on: bool) -> io::Result<()> {
+    save("appearance", "macos_icons", toml_edit::value(on))
 }
 
 /// Rewrites `[desktop] always_glassy_widgets`, the same way.

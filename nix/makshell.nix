@@ -2,14 +2,52 @@
 {
   lib,
   rustPlatform,
+  runCommand,
   runtimeShell,
   pkg-config,
   libxkbcommon,
   wayland,
   vulkan-loader,
   libGL,
+  # MacOS-Like's source (github:Scrimas/MacOS-Like), which builds the app icons.
+  macos-like,
+  bash,
+  python3,
+  librsvg,
+  gtk3,
+  util-linux,
+  coreutils,
+  findutils,
+  gnused,
+  gnugrep,
+  gawk,
 }:
 
+let
+  # setup.sh copies its base theme with shutil.copy2, which keeps the store's read-only mode, and
+  # then can't write over those copies. Its own copy, made writable, isn't rebuilt with the shell.
+  macosLike = runCommand "makshell-macos-like" { } ''
+    cp -r ${macos-like} $out
+    chmod -R u+w $out
+    substituteInPlace $out/setup.sh --replace-fail \
+      "            shutil.copy2(v, p)" \
+      "            shutil.copy2(v, p); os.chmod(p, os.stat(p).st_mode | 0o200)"
+  '';
+
+  # What setup.sh runs: Pillow and rsvg-convert to draw, gtk-update-icon-cache and flock.
+  iconTools = lib.makeBinPath [
+    bash
+    (python3.withPackages (ps: [ ps.pillow ]))
+    librsvg
+    gtk3
+    util-linux
+    coreutils
+    findutils
+    gnused
+    gnugrep
+    gawk
+  ];
+in
 rustPlatform.buildRustPackage {
   pname = "makshell";
   version = "0.1.0";
@@ -44,6 +82,15 @@ rustPlatform.buildRustPackage {
     exec $out/bin/makshell settings "\$@"
     EOF
     chmod +x $out/bin/makshell-settings
+
+    # Builds the MacOS-Like icon themes for the user's apps, which the shell runs.
+    mkdir -p $out/libexec
+    cat > $out/libexec/makshell-icons <<EOF
+    #!${runtimeShell}
+    export PATH=${iconTools}:\$PATH
+    exec ${bash}/bin/bash ${macosLike}/setup.sh "\$@"
+    EOF
+    chmod +x $out/libexec/makshell-icons
 
     # KWin only reads the first desktop entry naming an executable, so a second one for this binary
     # can take window management away from the shell.

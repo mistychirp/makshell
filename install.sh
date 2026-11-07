@@ -16,6 +16,14 @@ DESTDIR=${DESTDIR:-}
 ROOT=$(cd "$(dirname "$0")" && pwd)
 BUILD="$ROOT/build/kwin"
 MANIFEST="$PREFIX/share/makshell/installed-files"
+# Folders installed whole, links and all: MacOS-Like and the cursor.
+TREES="$PREFIX/share/makshell/installed-folders"
+
+# MacOS-Like (github.com/Scrimas/MacOS-Like), which the shell builds the app icons with, at the
+# commit the flake pins. The macOS cursor (github.com/ful1e5/apple_cursor), as released.
+MACOS_LIKE_REPO=https://github.com/Scrimas/MacOS-Like
+CURSOR_URL=https://github.com/ful1e5/apple_cursor/releases/download/v2.0.1/macOS.tar.xz
+CURSOR_SHA256=9c6e5e13b068ce51a9e90a9abd6ce232ec7d25d4ceb05aa8ac76efbb99c76762
 
 say() { printf '==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -29,7 +37,59 @@ build() {
     say "Building the KWin plugins"
     cmake -S "$ROOT/kwin" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX"
     cmake --build "$BUILD" --parallel
+    fetch_icons
+    fetch_cursor
     say "Built. Now: sudo ./install.sh install"
+}
+
+fetch_icons() {
+    command -v git >/dev/null || die "git is missing"
+    command -v python3 >/dev/null || die "python3 is missing"
+    rev=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["nodes"]["macos-like"]["locked"]["rev"])' "$ROOT/flake.lock")
+    dir="$ROOT/build/macos-like"
+    if [ "$(git -C "$dir" rev-parse HEAD 2>/dev/null)" != "$rev" ]; then
+        say "Getting MacOS-Like, for the app icons"
+        rm -rf "$dir"
+        mkdir -p "$dir"
+        git -C "$dir" init -q
+        git -C "$dir" fetch -q --depth 1 "$MACOS_LIKE_REPO" "$rev"
+        git -C "$dir" checkout -q FETCH_HEAD
+    fi
+    # The shell runs it later, as each user; it's only worth saying now.
+    python3 -c 'import PIL' 2>/dev/null && command -v rsvg-convert >/dev/null \
+        || say "Note: the app icons need Pillow and rsvg-convert (see README.md)"
+}
+
+fetch_cursor() {
+    dir="$ROOT/build/cursor"
+    [ -f "$dir/macOS/index.theme" ] && return
+    say "Getting the macOS cursor"
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    if command -v curl >/dev/null; then
+        curl -fsSL -o "$dir/macOS.tar.xz" "$CURSOR_URL"
+    elif command -v wget >/dev/null; then
+        wget -q -O "$dir/macOS.tar.xz" "$CURSOR_URL"
+    else
+        die "curl or wget is needed to get the cursor"
+    fi
+    echo "$CURSOR_SHA256  $dir/macOS.tar.xz" | sha256sum -c --quiet - \
+        || die "the cursor's download isn't what it should be"
+    tar -xJf "$dir/macOS.tar.xz" -C "$dir"
+    rm "$dir/macOS.tar.xz"
+}
+
+# Copies a whole folder into place, links and all, swapping it in at once.
+install_tree() { # install_tree SOURCE DESTINATION
+    new="$DESTDIR$2.new"
+    old="$DESTDIR$2.old"
+    rm -rf "$new" "$old"
+    mkdir -p "$(dirname "$new")"
+    cp -R "$1" "$new"
+    [ ! -e "$DESTDIR$2" ] || mv "$DESTDIR$2" "$old"
+    mv "$new" "$DESTDIR$2"
+    rm -rf "$old"
+    echo "$2" >> "$STAGE.trees"
 }
 
 # Copies a template into the staging folder, filling in @prefix@ and friends.
@@ -45,9 +105,11 @@ install_all() {
         || die "nothing built yet: run ./install.sh build first, as yourself"
     [ -f "$BUILD/bin/kwin/effects/plugins/makshell.so" ] \
         || die "the KWin plugins didn't build: see what ./install.sh build says"
+    [ -f "$ROOT/build/macos-like/setup.sh" ] && [ -f "$ROOT/build/cursor/macOS/index.theme" ] \
+        || die "the icons or the cursor are missing: run ./install.sh build again, as yourself"
     # Everything goes together in a staging folder first, and then into place.
     STAGE=$(mktemp -d)
-    trap 'rm -rf "$STAGE" "$STAGE.files"' EXIT
+    trap 'rm -rf "$STAGE" "$STAGE.files" "$STAGE.trees" "$STAGE.trees.sorted"' EXIT
 
     say "Installing the KWin plugins"
     DESTDIR="$STAGE" cmake --install "$BUILD" > /dev/null
@@ -68,6 +130,7 @@ install_all() {
     stage 0755 "$ROOT/contrib/session/makshell-startup" "$PREFIX/libexec/makshell-startup"
     stage 0644 "$ROOT/contrib/session/makshell.desktop" "$PREFIX/share/wayland-sessions/makshell.desktop"
     stage 0644 "$ROOT/contrib/session/makshell-session.target" "$PREFIX/lib/systemd/user/makshell-session.target"
+    stage 0755 "$ROOT/contrib/makshell-icons" "$PREFIX/libexec/makshell-icons"
 
     # Each file goes in as a new one, not over the old one: a running session has the plugins loaded
     # and the startup script open, and keeps the old ones until it ends.
@@ -85,6 +148,20 @@ install_all() {
     cp "$STAGE.files" "$DESTDIR$MANIFEST"
     rm -f "$STAGE.files"
 
+    say "Installing the app icons' builder and the cursor"
+    : > "$STAGE.trees"
+    install_tree "$ROOT/build/macos-like" "$PREFIX/share/makshell/macos-like"
+    rm -rf "$DESTDIR$PREFIX/share/makshell/macos-like/.git" "$DESTDIR$PREFIX/share/makshell/macos-like/screenshots"
+    install_tree "$ROOT/build/cursor/macOS" "$PREFIX/share/icons/macOS"
+    # What the last install had and this one doesn't.
+    sort "$STAGE.trees" > "$STAGE.trees.sorted"
+    if [ -f "$DESTDIR$TREES" ]; then
+        sort "$DESTDIR$TREES" | comm -23 - "$STAGE.trees.sorted" | while IFS= read -r gone; do
+            rm -rf "$DESTDIR$gone"
+        done
+    fi
+    cp "$STAGE.trees.sorted" "$DESTDIR$TREES"
+
     say "Installed into $PREFIX. Log out and back in, choosing \"makshell\" as the session."
 }
 
@@ -101,6 +178,12 @@ uninstall_all() {
         rm -f "$DESTDIR$file"
     done < "$DESTDIR$MANIFEST"
     rm -f "$DESTDIR$MANIFEST"
+    if [ -f "$DESTDIR$TREES" ]; then
+        while IFS= read -r tree; do
+            rm -rf "$DESTDIR$tree"
+        done < "$DESTDIR$TREES"
+        rm -f "$DESTDIR$TREES"
+    fi
     # Folders this left empty, deepest first.
     for dir in "$PREFIX/share/makshell" "$PREFIX/share/plasma/shells/org.makshell.desktop/contents/lockscreen" \
                "$PREFIX/share/plasma/shells/org.makshell.desktop/contents/fonts" \

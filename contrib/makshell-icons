@@ -1,0 +1,4 @@
+#!/bin/sh
+# Builds the MacOS-Like icon themes for this user's apps, into ~/.local/share/icons. The shell runs
+# it when they're missing, and again when apps come and go.
+exec bash @prefix@/share/makshell/macos-like/setup.sh "$@"

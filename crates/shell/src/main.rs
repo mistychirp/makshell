@@ -23,6 +23,7 @@ mod fonts;
 mod glass_protocol;
 mod group;
 mod hud;
+mod icon_themes;
 mod icons;
 mod kwin;
 mod launcher;
@@ -53,6 +54,7 @@ fn main() -> Result<(), iced_layershell::Error> {
     )
     .init();
     migrate::from_old_name();
+    icon_themes::note_start();
     fonts::load();
     appearance::init();
     if std::env::args().nth(1).as_deref() == Some("settings") {

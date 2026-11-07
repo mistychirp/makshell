@@ -1,5 +1,22 @@
 {
   "nodes": {
+    "macos-like": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1793718149,
+        "narHash": "sha256-CAKxpjm6ivQbR0xh7XPke4dTu2QIDLd8cd/chCOj6Mw=",
+        "owner": "Scrimas",
+        "repo": "MacOS-Like",
+        "rev": "838dfd392b24d2e5886b6618bee63f84328baa52",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Scrimas",
+        "repo": "MacOS-Like",
+        "rev": "838dfd392b24d2e5886b6618bee63f84328baa52",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1792502884,
@@ -18,6 +35,7 @@
     },
     "root": {
       "inputs": {
+        "macos-like": "macos-like",
         "nixpkgs": "nixpkgs"
       }
     }

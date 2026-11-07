@@ -11,6 +11,7 @@ running as its own login session without the rest of Plasma.
 - **Window decorations** with traffic lights, a macOS-style **Alt+Tab** and **lock screen**.
 - **Settings**, with the accent color, Light, Dark and Auto for apps, and colors for other apps
   generated from the accent or the wallpaper (KDE, GTK, Alacritty and Telegram).
+- **macOS app icons** for every app, built for the apps you have, and the macOS cursor.
 
 ### Works with KDE's System Settings
 
@@ -27,8 +28,7 @@ KWin's configuration with Plasma, so you can switch between them.
 - KDE Frameworks 6 and Qt 6.
 - A GPU with Vulkan or OpenGL.
 - For the menu bar and Control Center: NetworkManager, BlueZ and WirePlumber.
-- Optional: the [macOS cursor theme](https://github.com/ful1e5/apple_cursor), which the session uses
-  if it's installed.
+- For the app icons: Python 3 with Pillow, and `rsvg-convert`.
 
 ## Installation
 
@@ -56,7 +56,7 @@ sudo pacman -S --needed base-devel git rust cmake extra-cmake-modules pkgconf \
     kconfig kcoreaddons kglobalaccel kwindowsystem \
     wayland libepoxy libdrm vulkan-headers libxkbcommon \
     kscreenlocker xdg-desktop-portal-kde polkit-kde-agent kwallet-pam \
-    networkmanager bluez wireplumber
+    networkmanager bluez wireplumber python-pillow librsvg curl
 ```
 
 Then [build and install](#build-and-install). Rebuild makshell after KWin updates (see
@@ -75,7 +75,7 @@ sudo apt install build-essential git cmake extra-cmake-modules pkg-config \
     libkf6config-dev libkf6coreaddons-dev libkf6globalaccel-dev libkf6windowsystem-dev \
     libwayland-dev libepoxy-dev libdrm-dev libvulkan-dev libxkbcommon-dev \
     kwin-wayland kscreenlocker xdg-desktop-portal-kde polkit-kde-agent-1 \
-    network-manager bluez wireplumber
+    network-manager bluez wireplumber python3-pil librsvg2-bin libgtk-3-bin curl
 ```
 
 Package names shift between releases; if one isn't found, `apt search` for it. Then
@@ -89,6 +89,9 @@ cd makshell
 ./install.sh build           # as yourself
 sudo ./install.sh install    # into /usr/local
 ```
+
+`build` also downloads [MacOS-Like](https://github.com/Scrimas/MacOS-Like), which the icons are
+built with, and the macOS cursor.
 
 Log out, and choose **makshell** at the login screen. SDDM and GDM find it in `/usr/local`. If yours
 doesn't list it, install into `/usr` instead, with `PREFIX=/usr` for both commands.
@@ -120,6 +123,7 @@ file_manager = "org.kde.dolphin"
 accent = "blue"          # a macOS color, "#rrggbb", or "wallpaper"
 mode = "dark"            # "light", "dark" or "auto", for apps
 match_apps = false       # give other apps colors from the accent
+macos_icons = true       # give apps macOS's icons
 
 [desktop]
 wallpaper = "~/Pictures/wallpaper.png"
@@ -187,6 +191,10 @@ Notes:
 - The color templates for other apps come from [Noctalia](https://github.com/noctalia-dev/noctalia)
   ([MIT](LICENSES/Noctalia-MIT.txt)).
 - [Inter](https://rsms.me/inter/), the typeface, is under the [OFL](assets/fonts/OFL.txt).
+- The app icons are [MacTahoe](https://github.com/vinceliuice/MacTahoe-icon-theme)'s, as
+  [MacOS-Like](https://github.com/Scrimas/MacOS-Like) builds them, and the cursor is
+  [apple_cursor](https://github.com/ful1e5/apple_cursor), all GPL-3.0. makshell downloads them;
+  they aren't part of this repository.
 - The KWin plugins are GPL-3.0-or-later, as their source headers say.
 
 makshell isn't affiliated with Apple. macOS is a trademark of Apple Inc.

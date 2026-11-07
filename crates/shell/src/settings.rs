@@ -190,6 +190,7 @@ pub enum Message {
     AccentChosen(String),
     AccentTyped(String),
     MatchAppsToggled(bool),
+    MacosIconsToggled(bool),
     WallpaperColorsRead(Vec<[u8; 3]>),
     /// Opens one of KDE's settings modules, for what we don't do ourselves yet.
     OpenSystemPage(&'static str),
@@ -496,6 +497,7 @@ struct SettingsApp {
     /// The accent options that come from the wallpaper.
     wallpaper_colors: Vec<[u8; 3]>,
     match_apps: bool,
+    macos_icons: bool,
     /// A few colors of the palette apps would get.
     palette_preview: Vec<[u8; 3]>,
     /// The apps whose notifications are off, as their keys and names.
@@ -669,6 +671,7 @@ impl SettingsApp {
             accent: config.appearance.accent,
             wallpaper_colors: Vec::new(),
             match_apps: config.appearance.match_apps,
+            macos_icons: config.appearance.macos_icons,
             palette_preview: Vec::new(),
             notifications_off: notifications_off(),
             exceptions: Vec::new(),
@@ -894,6 +897,13 @@ impl SettingsApp {
                 }
                 return Task::future(tell_shell()).discard();
             }
+            Message::MacosIconsToggled(on) => {
+                self.macos_icons = on;
+                if let Err(err) = config::save_macos_icons(on) {
+                    log::warn!("can't save whether apps get macOS icons: {err}");
+                }
+                return Task::future(tell_shell()).discard();
+            }
             Message::WallpaperColorsRead(colors) => {
                 self.wallpaper_colors = colors;
                 self.show_accent();
@@ -961,6 +971,7 @@ impl SettingsApp {
                     self.mode.clone_from(&config.appearance.mode);
                     self.accent = config.appearance.accent;
                     self.match_apps = config.appearance.match_apps;
+                    self.macos_icons = config.appearance.macos_icons;
                     self.show_accent();
                     return Task::batch([
                         Task::perform(read_glass(), Message::GlassRead),
@@ -1230,16 +1241,22 @@ impl SettingsApp {
             section(
                 "Appearance",
                 column![
-                    card(vec![setting_row(
-                        "Apps",
-                        row![
-                            mode_choice("Light", "light"),
-                            mode_choice("Dark", "dark"),
-                            mode_choice("Auto", "auto"),
-                        ]
-                        .spacing(2)
-                        .into(),
-                    )]),
+                    card(vec![
+                        setting_row(
+                            "Apps",
+                            row![
+                                mode_choice("Light", "light"),
+                                mode_choice("Dark", "dark"),
+                                mode_choice("Auto", "auto"),
+                            ]
+                            .spacing(2)
+                            .into(),
+                        ),
+                        setting_row(
+                            "macOS Icons",
+                            settings_toggle(self.macos_icons, Message::MacosIconsToggled),
+                        ),
+                    ]),
                     caption("Auto switches at sunrise and sunset.",),
                 ]
                 .spacing(6),

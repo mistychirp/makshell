@@ -28,6 +28,7 @@ use crate::anim;
 use crate::apps::{self, App, AppIndex};
 use crate::banners::{self, Banners};
 use crate::config::{self, Config};
+use crate::icon_themes;
 use crate::icons::Glyph;
 use crate::kwin::{self, KeyboardLayouts, WindowInfo};
 use crate::material::{self, Material, MaterialSurface};
@@ -102,6 +103,9 @@ pub enum Message {
     AppearanceApplied(Option<appearance::Applied>),
     /// Time to see whether it's become light or dark, for Auto.
     AppearanceTick,
+    /// Time to see whether the MacOS-Like icons need building, for apps that came since.
+    IconThemesCheck,
+    IconThemesBuilt(icon_themes::Built),
     WindowsChanged(Vec<WindowInfo>),
     KeyboardLayoutsChanged(KeyboardLayouts),
     /// A layout was chosen in the keyboard layout menu; carries its index.
@@ -827,6 +831,7 @@ impl Shell {
             open_dock,
             Task::perform(brightness::level(), Message::BrightnessRead),
             Task::perform(appearance::refresh(), Message::AppearanceApplied),
+            Task::perform(icon_themes::build(), Message::IconThemesBuilt),
         ];
         if shell.wallpaper.is_some() {
             let (id, open) = Message::layershell_open(wallpaper::settings());
@@ -985,6 +990,24 @@ impl Shell {
             Message::AppearanceTick => {
                 return Task::perform(appearance::refresh(), Message::AppearanceApplied);
             }
+            Message::IconThemesCheck => {
+                return Task::perform(icon_themes::build(), Message::IconThemesBuilt);
+            }
+            Message::IconThemesBuilt(built) => match built {
+                icon_themes::Built::Nothing => {}
+                // Icon lookups only know the themes there were when the shell started, so it
+                // starts again, and the session brings it back.
+                icon_themes::Built::First => {
+                    log::info!("restarting to use the new icons");
+                    std::process::exit(icon_themes::RESTART);
+                }
+                icon_themes::Built::Remade => {
+                    return Task::batch([
+                        self.reload_icons(),
+                        Task::perform(appearance::icons_remade(), Message::AppearanceApplied),
+                    ]);
+                }
+            },
             Message::WindowsChanged(mut windows) => {
                 // An alert is a window to the compositor, but not to the rest of the shell.
                 let alert_active = windows
@@ -3791,10 +3814,11 @@ impl Shell {
         self.show_wifi = config.menubar.show_wifi;
         self.show_bluetooth = config.menubar.show_bluetooth;
         self.show_sound = config.menubar.show_sound;
-        let mut tasks = vec![Task::perform(
-            appearance::refresh(),
-            Message::AppearanceApplied,
-        )];
+        let mut tasks = vec![
+            Task::perform(appearance::refresh(), Message::AppearanceApplied),
+            // In case macOS icons were just turned on.
+            Task::perform(icon_themes::build(), Message::IconThemesBuilt),
+        ];
         if config.desktop.wallpaper != self.wallpaper_path {
             self.wallpaper_path.clone_from(&config.desktop.wallpaper);
             wallpaper::link_for_lock_screen(config.desktop.wallpaper.as_deref());
@@ -4676,6 +4700,8 @@ impl Shell {
         } else {
             Subscription::none()
         };
+        // Apps come and go, and each wants its own tile.
+        let icon_check = time::every(Duration::from_secs(600)).map(|_| Message::IconThemesCheck);
         let control_refresh = if control_open {
             time::every(Duration::from_secs(2)).map(|_| Message::ControlRefresh)
         } else if self.show_wifi || self.show_bluetooth || self.show_sound {
@@ -4747,6 +4773,7 @@ impl Shell {
             bar_brightness,
             control_refresh,
             appearance_tick,
+            icon_check,
             kwin::windows().map(Message::WindowsChanged),
             kwin::keyboard_layouts().map(Message::KeyboardLayoutsChanged),
             time::every(Duration::from_secs(1)).map(|_| Message::Tick),

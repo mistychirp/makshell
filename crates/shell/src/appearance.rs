@@ -27,6 +27,7 @@ use material_colors::scheme::variant::SchemeContent;
 use material_colors::score::Score;
 
 use crate::config::Config;
+use crate::icon_themes;
 use crate::{dbus, places, wallpaper};
 
 /// What the config file says when it hasn't been changed.
@@ -151,11 +152,11 @@ fn config_home() -> PathBuf {
     home_dir("XDG_CONFIG_HOME", ".config")
 }
 
-fn data_home() -> PathBuf {
+pub fn data_home() -> PathBuf {
     home_dir("XDG_DATA_HOME", ".local/share")
 }
 
-fn state_dir() -> PathBuf {
+pub fn state_dir() -> PathBuf {
     home_dir("XDG_STATE_HOME", ".local/state").join("makshell")
 }
 
@@ -389,20 +390,34 @@ pub async fn refresh() -> Option<Applied> {
     })
 }
 
+/// After the MacOS-Like icons were remade: KDE apps load them again, and if they've only just
+/// arrived, apps get them.
+pub async fn icons_remade() -> Option<Applied> {
+    let applied = refresh().await;
+    tell_kde_apps(true).await;
+    applied
+}
+
 /// One at a time, each going by the config file as it is by then, so the last one is right however
 /// quickly the accent is changed.
 static SYNCING: Mutex<()> = Mutex::new(());
 
 /// What's been done, as a line in a file: whether apps have a palette made for them, light or dark,
 /// with the accent, and from what and which templates.
-fn applied_state(generated: bool, light: bool, accent: [u8; 3], seed: [u8; 3]) -> String {
+fn applied_state(
+    generated: bool,
+    light: bool,
+    accent: [u8; 3],
+    seed: [u8; 3],
+    icons: IconChoice,
+) -> String {
     let templates = if generated {
         templates_fingerprint()
     } else {
         0
     };
     format!(
-        "{} {} {} {} {templates:x}",
+        "{} {} {} {} {templates:x} {}",
         if generated { "generated" } else { "own" },
         if light { "light" } else { "dark" },
         hex(accent),
@@ -411,7 +426,39 @@ fn applied_state(generated: bool, light: bool, accent: [u8; 3], seed: [u8; 3]) -
         } else {
             String::from("-")
         },
+        icons.word(),
     )
+}
+
+/// Which icons apps get.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IconChoice {
+    /// MacOS-Like's, which are there.
+    Macos,
+    /// MacOS-Like's, once they're built; till then, whatever there is.
+    Waiting,
+    /// The ones they had before.
+    Own,
+}
+
+impl IconChoice {
+    fn of(config: &Config) -> Self {
+        if !config.appearance.macos_icons {
+            Self::Own
+        } else if icon_themes::installed() {
+            Self::Macos
+        } else {
+            Self::Waiting
+        }
+    }
+
+    fn word(self) -> &'static str {
+        match self {
+            Self::Macos => "macos-icons",
+            Self::Waiting => "waiting-icons",
+            Self::Own => "own-icons",
+        }
+    }
 }
 
 /// What the last line said, read the way it's written now or was before: whether apps had a palette
@@ -467,8 +514,9 @@ fn sync() -> ([u8; 3], bool, bool) {
         (own_accent, own_accent)
     };
 
+    let icons = IconChoice::of(&config);
     let state_file = state_dir().join("colors-applied");
-    let state = applied_state(generated, light, accent, palette_seed);
+    let state = applied_state(generated, light, accent, palette_seed, icons);
     let before = fs::read_to_string(&state_file).ok();
     let before = before.as_deref().map(str::trim);
     if before == Some(state.as_str()) {
@@ -511,6 +559,10 @@ fn sync() -> ([u8; 3], bool, bool) {
     let mut icons_changed = false;
     if before.is_none() || light != was_light {
         icons_changed = set_appearance(light);
+    }
+    let was_icons = before.and_then(|line| line.split(' ').nth(5));
+    if was_icons != Some(icons.word()) {
+        icons_changed |= choose_icons(icons, light);
     }
     if done && let Err(err) = write_file(&state_file, &state) {
         log::warn!("can't remember what colors were applied: {err}");
@@ -642,16 +694,7 @@ fn set_appearance(light: bool) -> bool {
 
     let path = config_home().join("kdeglobals");
     let globals = fs::read_to_string(&path).unwrap_or_default();
-    let current = kde_groups(&globals)
-        .into_iter()
-        .find(|(header, _)| header == "[Icons]")
-        .and_then(|(_, lines)| {
-            lines
-                .iter()
-                .find(|line| key_of(line) == "Theme")
-                .and_then(|line| line.split_once('=').map(|(_, theme)| theme.to_owned()))
-        });
-    let Some(current) = current else {
+    let Some(current) = kde_icon_theme(&globals) else {
         return false;
     };
     let Some(twin) = icon_twin(&current, light, icon_theme_exists) else {
@@ -660,16 +703,70 @@ fn set_appearance(light: bool) -> bool {
     if twin == current {
         return false;
     }
-    if can_change(&path) {
-        let mut groups = kde_groups(&globals);
-        merge_kde_keys(&format!("[Icons]\nTheme={twin}\n"), &mut groups);
-        if let Err(err) = write_file(&path, &kde_text(&groups)) {
+    set_icon_theme(&path, &globals, &twin)
+}
+
+/// `[Icons] Theme` in this `kdeglobals`, where KDE only writes it when it isn't Breeze.
+fn kde_icon_theme(globals: &str) -> Option<String> {
+    kde_groups(globals)
+        .into_iter()
+        .find(|(header, _)| header == "[Icons]")
+        .and_then(|(_, lines)| {
+            lines
+                .iter()
+                .find(|line| key_of(line) == "Theme")
+                .and_then(|line| line.split_once('=').map(|(_, theme)| theme.to_owned()))
+        })
+}
+
+/// Gives KDE apps, and GTK's, this icon theme. A `kdeglobals` that's a link, as home-manager makes
+/// them, stays as it is.
+fn set_icon_theme(path: &Path, globals: &str, theme: &str) -> bool {
+    if fs::symlink_metadata(path).is_err() || can_change(path) {
+        let mut groups = kde_groups(globals);
+        merge_kde_keys(&format!("[Icons]\nTheme={theme}\n"), &mut groups);
+        if let Err(err) = write_file(path, &kde_text(&groups)) {
             log::warn!("can't change the icon theme: {err}");
             return false;
         }
     }
-    gsettings("icon-theme", &twin);
+    gsettings("icon-theme", theme);
     true
+}
+
+/// Switches apps to MacOS-Like's icons, keeping what they had to go back to, or back to that.
+fn choose_icons(choice: IconChoice, light: bool) -> bool {
+    let path = config_home().join("kdeglobals");
+    let globals = fs::read_to_string(&path).unwrap_or_default();
+    let current = kde_icon_theme(&globals);
+    let ours = current.as_deref().is_some_and(icon_themes::is_ours);
+    let before = state_dir().join("icons-before");
+    let next = match choice {
+        IconChoice::Macos => {
+            if !ours {
+                // Empty when KDE's default was in use.
+                if let Err(err) = write_file(&before, current.as_deref().unwrap_or_default()) {
+                    log::warn!("can't remember the icon theme: {err}");
+                    return false;
+                }
+            }
+            icon_themes::theme(light).to_owned()
+        }
+        IconChoice::Own if ours => {
+            let old = fs::read_to_string(&before)
+                .ok()
+                .map(|theme| theme.trim().to_owned())
+                .filter(|theme| !theme.is_empty() && !icon_themes::is_ours(theme))
+                .unwrap_or_else(|| String::from("breeze"));
+            icon_twin(&old, light, icon_theme_exists).unwrap_or(old)
+        }
+        IconChoice::Own | IconChoice::Waiting => return false,
+    };
+    if current.as_deref() == Some(next.as_str()) {
+        return false;
+    }
+    log::info!("icon theme {next}");
+    set_icon_theme(&path, &globals, &next)
 }
 
 /// The light or dark twin of an icon theme, by its name: `-Light` and `-Dark`, or without either
@@ -1409,8 +1506,9 @@ mod tests {
             read_state("own #62ba46 0"),
             (false, false, Some("#62ba46".into()))
         );
-        let now = applied_state(true, true, [1, 2, 3], [4, 5, 6]);
+        let now = applied_state(true, true, [1, 2, 3], [4, 5, 6], IconChoice::Macos);
         assert_eq!(read_state(&now), (true, true, Some("#010203".into())));
+        assert_eq!(now.split(' ').nth(5), Some(IconChoice::Macos.word()));
         assert_eq!(read_state(""), (false, false, None));
     }
 

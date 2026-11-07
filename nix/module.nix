@@ -2,6 +2,9 @@
 #
 # Both are built from the system's own packages, so the plugin always matches the KWin it loads
 # into. The session shares KWin's configuration (kwinrc, kxkbrc, shortcuts) with Plasma.
+#
+# The flake hands it MacOS-Like's source first: nixosModules.default = import ./nix/module.nix { ... }.
+{ macos-like }:
 {
   config,
   lib,
@@ -12,7 +15,7 @@
 let
   cfg = config.programs.makshell;
 
-  makshell = pkgs.callPackage ./makshell.nix { };
+  makshell = pkgs.callPackage ./makshell.nix { inherit macos-like; };
   kwin-makshell = pkgs.kdePackages.callPackage ../kwin/package.nix { };
   inherit (pkgs.kdePackages) kwin polkit-kde-agent-1;
 
