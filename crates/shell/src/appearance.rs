@@ -692,9 +692,14 @@ fn icon_twin(theme: &str, light: bool, exists: impl Fn(&str) -> bool) -> Option<
     candidates.into_iter().find(|name| exists(name))
 }
 
-fn icon_theme_exists(name: &str) -> bool {
+/// Whether an icon theme by this id is installed anywhere icons are looked for.
+pub fn icon_theme_exists(name: &str) -> bool {
     let mut roots = vec![data_home().join("icons"), places::home().join(".icons")];
-    let dirs = std::env::var("XDG_DATA_DIRS").unwrap_or_default();
+    // Unset, it's the spec's default.
+    let dirs = std::env::var("XDG_DATA_DIRS")
+        .ok()
+        .filter(|dirs| !dirs.is_empty())
+        .unwrap_or_else(|| String::from("/usr/local/share:/usr/share"));
     roots.extend(
         dirs.split(':')
             .filter(|dir| !dir.is_empty())

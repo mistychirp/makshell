@@ -11,6 +11,8 @@ use std::{env, fs};
 
 use freedesktop_desktop_entry::unicase::Ascii;
 use freedesktop_desktop_entry::{DesktopEntry, find_app_by_id};
+
+use crate::appearance;
 use iced_widget::image;
 use resvg::{tiny_skia, usvg};
 
@@ -55,7 +57,16 @@ impl AppIndex {
     pub fn load() -> Self {
         let locales = freedesktop_desktop_entry::get_languages_from_env();
         let entries = freedesktop_desktop_entry::desktop_entries(&locales);
-        let icon_theme = icon_theme();
+        let mut icon_theme = icon_theme();
+        // Looking in a theme that isn't there is slow, and finds nothing.
+        if !appearance::icon_theme_exists(&icon_theme) {
+            let instead = FALLBACK_THEMES
+                .into_iter()
+                .find(|theme| appearance::icon_theme_exists(theme))
+                .unwrap_or("hicolor");
+            log::warn!("icon theme {icon_theme} isn't installed, using {instead}");
+            icon_theme = instead.to_owned();
+        }
         log::info!(
             "indexed {} desktop entries, icon theme {icon_theme}",
             entries.len()
@@ -158,11 +169,7 @@ impl AppIndex {
         if let Some(icon) = self.menu_icons.get(name) {
             return icon.clone();
         }
-        let path = freedesktop_icons::lookup(name)
-            .with_theme(&self.icon_theme)
-            .with_size(16)
-            .with_cache()
-            .find();
+        let path = self.lookup(name, 16);
         let icon = path.and_then(|path| {
             let (width, height, mut rgba) = if path.extension().is_some_and(|ext| ext == "svg") {
                 rasterize_svg_at(&path, MENU_ICON_RASTER_SIZE)?
@@ -197,11 +204,26 @@ impl AppIndex {
         if path.is_absolute() {
             return path.exists().then(|| path.to_owned());
         }
-        freedesktop_icons::lookup(name)
-            .with_theme(&self.icon_theme)
-            .with_size(128)
-            .with_cache()
-            .find()
+        self.lookup(name, 128)
+    }
+
+    /// The icon in the user's theme, or else in the themes most desktops have: a theme needn't
+    /// have every icon, and one that doesn't say it inherits from Breeze would leave apps without.
+    fn lookup(&self, name: &str, size: u16) -> Option<PathBuf> {
+        std::iter::once(self.icon_theme.as_str())
+            .chain(
+                FALLBACK_THEMES
+                    .iter()
+                    .copied()
+                    .filter(|theme| *theme != self.icon_theme),
+            )
+            .find_map(|theme| {
+                freedesktop_icons::lookup(name)
+                    .with_theme(theme)
+                    .with_size(size)
+                    .with_cache()
+                    .find()
+            })
     }
 }
 
@@ -296,6 +318,9 @@ pub fn default_app(mime: &str) -> Option<String> {
     let id = desktop_file.trim().strip_suffix(".desktop")?;
     (!id.is_empty()).then(|| id.to_owned())
 }
+
+/// Where an icon the user's theme lacks is looked for next, in order.
+const FALLBACK_THEMES: [&str; 3] = ["breeze-dark", "breeze", "Adwaita"];
 
 /// The id of the icon theme, like `breeze-dark`: KDE's setting, then GTK's, then KDE's default.
 fn icon_theme() -> String {
