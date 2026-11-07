@@ -33,6 +33,7 @@
 #include <QLoggingCategory>
 #include <QMatrix4x4>
 #include <QPointer>
+#include <QScopeGuard>
 #include <QTimer>
 #include <QWindow>
 
@@ -758,11 +759,13 @@ void GlassEffect::prePaintScreen(ScreenPrePaintData &data)
     effects->prePaintScreen(data);
 }
 
-void GlassEffect::paintScreen(const RenderTarget &renderTarget, const RenderViewport &viewport, int mask, const Region &deviceRegion, LogicalOutput *screen)
+PaintResult GlassEffect::paintScreen(const RenderTarget &renderTarget, const RenderViewport &viewport, int mask, const Region &deviceRegion, LogicalOutput *screen)
 {
     m_screenTarget = &renderTarget;
-    effects->paintScreen(renderTarget, viewport, mask, deviceRegion, screen);
-    m_screenTarget = nullptr;
+    const auto done = qScopeGuard([this] {
+        m_screenTarget = nullptr;
+    });
+    return effects->paintScreen(renderTarget, viewport, mask, deviceRegion, screen);
 }
 
 void GlassEffect::prePaintWindow(RenderView *view, EffectWindow *w, WindowPrePaintData &data)
@@ -780,7 +783,7 @@ void GlassEffect::prePaintWindow(RenderView *view, EffectWindow *w, WindowPrePai
     effects->prePaintWindow(view, w, data);
 }
 
-void GlassEffect::paintWindow(const RenderTarget &renderTarget, const RenderViewport &viewport, EffectWindow *w, int mask, const Region &deviceRegion, WindowPaintData &data)
+PaintResult GlassEffect::paintWindow(const RenderTarget &renderTarget, const RenderViewport &viewport, EffectWindow *w, int mask, const Region &deviceRegion, WindowPaintData &data)
 {
     if (auto it = m_awaitingGlass.find(w); it != m_awaitingGlass.end()) {
         if (it->second.elapsed() < s_awaitGlassMs) {
@@ -799,7 +802,7 @@ void GlassEffect::paintWindow(const RenderTarget &renderTarget, const RenderView
             data.translate(origin.x() * (1 - state.scale) + state.slide * w->width(), origin.y() * (1 - state.scale));
         }
     }
-    effects->paintWindow(renderTarget, viewport, w, mask, deviceRegion, data);
+    return effects->paintWindow(renderTarget, viewport, w, mask, deviceRegion, data);
 }
 
 void GlassEffect::postPaintScreen()
@@ -831,18 +834,18 @@ void GlassEffect::postPaintScreen()
     effects->postPaintScreen();
 }
 
-void GlassEffect::drawWindow(const RenderTarget &renderTarget, const RenderViewport &viewport, EffectWindow *w, int mask, const Region &deviceRegion, WindowPaintData &data)
+PaintResult GlassEffect::drawWindow(const RenderTarget &renderTarget, const RenderViewport &viewport, EffectWindow *w, int mask, const Region &deviceRegion, WindowPaintData &data)
 {
     paintGlass(renderTarget, viewport, w, deviceRegion, data);
     // The glass is behind the window as it is; the window itself lets some of it through.
     if (auto it = m_windows.find(w); it != m_windows.end() && it->second.dim) {
         if (it->second.keyed && &renderTarget == m_screenTarget
             && drawKeyed(renderTarget, viewport, w, deviceRegion, data, *it->second.keyed)) {
-            return;
+            return MAKSHELL_PAINTED;
         }
         data.multiplyOpacity(m_settings.windowOpacity);
     }
-    effects->drawWindow(renderTarget, viewport, w, mask, deviceRegion, data);
+    return effects->drawWindow(renderTarget, viewport, w, mask, deviceRegion, data);
 }
 
 KeyedWindow::~KeyedWindow()
@@ -881,7 +884,7 @@ bool GlassEffect::drawKeyed(const RenderTarget &renderTarget, const RenderViewpo
         glClear(GL_COLOR_BUFFER_BIT);
         WindowPaintData plain;
         plain.setOpacity(1.0);
-        effects->drawWindow(target, targetViewport, w, PAINT_WINDOW_TRANSFORMED | PAINT_WINDOW_TRANSLUCENT, Region::infinite(), plain);
+        (void)effects->drawWindow(target, targetViewport, w, PAINT_WINDOW_TRANSFORMED | PAINT_WINDOW_TRANSLUCENT, Region::infinite(), plain);
         GLFramebuffer::popFramebuffer();
         keyed.dirty = false;
         if (resized || !keyed.looked.isValid() || keyed.looked.elapsed() >= s_keyLookMs) {

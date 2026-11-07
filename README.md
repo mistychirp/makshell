@@ -21,8 +21,9 @@ KWin's configuration with Plasma, so you can switch between them.
 
 ## Requirements
 
-- **KWin 6.7** on Wayland. makshell's KWin plugins use KWin's internal API, which changes between
-  releases: they're built and tested against KWin 6.7.5. Check yours with `kwin_wayland --version`.
+- **KWin 6.7 or 6.8** on Wayland. makshell's KWin plugins use KWin's internal API, which changes
+  between releases: they're tested with KWin 6.7.5 and build with 6.8.2. Check yours with
+  `kwin_wayland --version`.
 - KDE Frameworks 6 and Qt 6.
 - A GPU with Vulkan or OpenGL.
 - For the menu bar and Control Center: NetworkManager, BlueZ and WirePlumber.
@@ -63,7 +64,7 @@ Then [build and install](#build-and-install). Rebuild makshell after KWin update
 
 ### Debian and Ubuntu
 
-You need a release with KWin 6.7, so check `kwin_wayland --version` first: Debian 13, for one, has
+You need a release with KWin 6.7 or 6.8, so check `kwin_wayland --version` first: Debian 13, for one, has
 an older KWin and won't work. Rust from the distro is often too old, so install it with
 [rustup](https://rustup.rs) (makshell needs Rust 1.88 or newer).
 

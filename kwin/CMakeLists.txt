@@ -18,6 +18,8 @@ find_package(Qt6 REQUIRED COMPONENTS Core DBus Gui Quick Widgets)
 find_package(QtWaylandScanner REQUIRED)
 find_package(KF6 REQUIRED COMPONENTS Config CoreAddons GlobalAccel)
 find_package(KWin REQUIRED)
+# KWin's plugin API changes between releases; the code checks this where it differs.
+add_compile_definitions(MAKSHELL_KWIN_MINOR=${KWin_VERSION_MINOR})
 find_package(KDecoration3 REQUIRED)
 
 kcoreaddons_add_plugin(makshell

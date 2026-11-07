@@ -29,6 +29,16 @@ class SurfaceInterface;
 namespace Makshell
 {
 
+// From KWin 6.8, painting says whether it worked (it doesn't after a GPU reset); before, it doesn't
+// say. A void function can return a void call, so `return effects->drawWindow(...)` suits both.
+#if MAKSHELL_KWIN_MINOR >= 8
+using PaintResult = bool;
+#define MAKSHELL_PAINTED true
+#else
+using PaintResult = void;
+#define MAKSHELL_PAINTED
+#endif
+
 class Arranger;
 class GlassManager;
 
@@ -167,11 +177,11 @@ public:
 
     void reconfigure(ReconfigureFlags flags) override;
     void prePaintScreen(KWin::ScreenPrePaintData &data) override;
-    void paintScreen(const KWin::RenderTarget &renderTarget, const KWin::RenderViewport &viewport, int mask, const KWin::Region &deviceRegion, KWin::LogicalOutput *screen) override;
+    PaintResult paintScreen(const KWin::RenderTarget &renderTarget, const KWin::RenderViewport &viewport, int mask, const KWin::Region &deviceRegion, KWin::LogicalOutput *screen) override;
     void postPaintScreen() override;
     void prePaintWindow(KWin::RenderView *view, KWin::EffectWindow *w, KWin::WindowPrePaintData &data) override;
-    void paintWindow(const KWin::RenderTarget &renderTarget, const KWin::RenderViewport &viewport, KWin::EffectWindow *w, int mask, const KWin::Region &deviceRegion, KWin::WindowPaintData &data) override;
-    void drawWindow(const KWin::RenderTarget &renderTarget, const KWin::RenderViewport &viewport, KWin::EffectWindow *w, int mask, const KWin::Region &deviceRegion, KWin::WindowPaintData &data) override;
+    PaintResult paintWindow(const KWin::RenderTarget &renderTarget, const KWin::RenderViewport &viewport, KWin::EffectWindow *w, int mask, const KWin::Region &deviceRegion, KWin::WindowPaintData &data) override;
+    PaintResult drawWindow(const KWin::RenderTarget &renderTarget, const KWin::RenderViewport &viewport, KWin::EffectWindow *w, int mask, const KWin::Region &deviceRegion, KWin::WindowPaintData &data) override;
 
     bool isActive() const override;
     bool blocksDirectScanout() const override;

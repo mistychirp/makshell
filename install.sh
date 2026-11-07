@@ -43,6 +43,8 @@ stage() { # stage MODE SOURCE DESTINATION
 install_all() {
     [ -x "$ROOT/target/release/makshell" ] && [ -f "$BUILD/CMakeCache.txt" ] \
         || die "nothing built yet: run ./install.sh build first, as yourself"
+    [ -f "$BUILD/bin/kwin/effects/plugins/makshell.so" ] \
+        || die "the KWin plugins didn't build: see what ./install.sh build says"
     # Everything goes together in a staging folder first, and then into place.
     STAGE=$(mktemp -d)
     trap 'rm -rf "$STAGE" "$STAGE.files"' EXIT
