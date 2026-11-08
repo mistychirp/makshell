@@ -13,10 +13,12 @@
 
 #include <QElapsedTimer>
 #include <QStringList>
+#include <QVector3D>
 
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace KWin
@@ -138,11 +140,53 @@ struct KeyedWindow {
 
 /// What one glass shape keeps between frames, per render view.
 struct ShapeRender {
+    ShapeRender() = default;
+    // So that a vector of them moves them rather than copying.
+    ShapeRender(ShapeRender &&) noexcept = default;
+    ShapeRender &operator=(ShapeRender &&) noexcept = default;
+
     /// Level 0 is the background behind the shape at device resolution, cached: only the
     /// repainted part is copied each frame. Further levels are the blur chain: level 1 ends up
     /// with the blur, and the first level after the blur's own with the very wide one.
     std::vector<std::unique_ptr<KWin::GLTexture>> textures;
     std::vector<std::unique_ptr<KWin::GLFramebuffer>> framebuffers;
+    /// The part of level 0 that's been copied since the textures were made, relative to the shape.
+    KWin::Region filled;
+    /// Where the shape was, in device pixels, when it was last blurred.
+    KWin::Rect blurredAt;
+    /// When it was last blurred.
+    QElapsedTimer blurred;
+};
+
+/// How a window was last drawn on one view, to tell whether it looks any different now.
+struct WindowLook {
+    KWin::RectF geometry;
+    qreal opacity = 1;
+    qreal brightness = 1;
+    qreal saturation = 1;
+    qreal xScale = 1;
+    qreal yScale = 1;
+    QVector3D translation;
+    /// The last damage that's been drawn.
+    quint64 damage = 0;
+    /// The last change to its glass that's been drawn.
+    quint64 glass = 0;
+
+    bool sameAs(const WindowLook &other) const
+    {
+        return geometry == other.geometry && opacity == other.opacity && brightness == other.brightness
+            && saturation == other.saturation && xScale == other.xScale && yScale == other.yScale
+            && translation == other.translation;
+    }
+};
+
+/// What's known about one view's last frame, to tell what's changed on it since.
+struct ViewHistory {
+    std::unordered_map<KWin::EffectWindow *, WindowLook> looks;
+    /// The windows that were animated, which may have been drawn anywhere.
+    std::unordered_set<KWin::EffectWindow *> animated;
+    /// The last change to everything that's been drawn.
+    quint64 everything = 0;
 };
 
 struct WindowGlass {
@@ -168,6 +212,8 @@ struct WindowGlass {
     bool dim = false;
     /// Only its background is, which takes drawing it by itself first.
     std::unique_ptr<KeyedWindow> keyed;
+    /// When its shapes last changed, counted along with windows' damage.
+    quint64 changed = 0;
 };
 
 /// Glass behind the shapes clients ask for with makshell-glass-v1, the way Tahoe draws it: a flat
@@ -225,7 +271,17 @@ private:
     void findBackgrounds(KeyedWindow &keyed, const KWin::Rect &frame);
     void windowMoved(KWin::EffectWindow *w, const KWin::RectF &oldGeometry);
     void placeDialog(KWin::EffectWindow *w);
-    void paintGlass(const KWin::RenderTarget &renderTarget, const KWin::RenderViewport &viewport, KWin::EffectWindow *w, const KWin::Region &deviceRegion, const KWin::WindowPaintData &data);
+    /// Draws a window's glass, blurring what's behind it again if that may have changed. Returns
+    /// whether it did.
+    bool paintGlass(const KWin::RenderTarget &renderTarget, const KWin::RenderViewport &viewport, KWin::EffectWindow *w, const KWin::Region &deviceRegion, const KWin::WindowPaintData &data, bool behindChanged);
+    /// Whether what's behind a window may have changed since the last frame on this view.
+    bool behindChanged(KWin::EffectWindow *w) const;
+    /// Notes how a window is drawn this frame, and what it may have changed on screen.
+    void noteDrawn(KWin::EffectWindow *w, const KWin::WindowPaintData &data, bool reblurred);
+    /// Something changed what's on screen everywhere, or in a way that isn't followed.
+    void changedEverything();
+    /// A minimize animation is moving the window, which goes without glass on its way, like Tahoe's.
+    static bool isMinimizing(KWin::EffectWindow *w);
     bool ensureTextures(ShapeRender &render, const QSize &size, GLenum format, int levels);
     void frost(ShapeRender &render, int passes, float offset);
     float measureLuminance(ShapeRender &render, bool linear);
@@ -257,6 +313,23 @@ private:
     /// so that nothing shows without its glass or before its animation has started.
     std::unordered_map<KWin::EffectWindow *, QElapsedTimer> m_awaitingGlass;
     bool m_valid = false;
+
+    // Glass is only blurred again when what's behind it may have changed, which is followed from
+    // what's drawn below it: any window that's damaged, moved, faded or animated.
+    std::unordered_map<KWin::RenderView *, ViewHistory> m_history;
+    /// The last damage to each window, in the order damage came.
+    std::unordered_map<KWin::EffectWindow *, quint64> m_damage;
+    quint64 m_damageCount = 0;
+    /// Changes everything is drawn again for, like the stacking order changing.
+    quint64 m_everything = 1;
+    /// This frame: the windows being animated, and those that were last frame.
+    std::unordered_set<KWin::EffectWindow *> m_animatedNow;
+    std::unordered_set<KWin::EffectWindow *> m_animatedLately;
+    /// Where each window is in the stacking order this frame.
+    std::unordered_map<KWin::EffectWindow *, int> m_stackIndex;
+    /// What's changed on screen so far this frame, in logical coordinates: below the window being
+    /// drawn, since they're drawn from the bottom up.
+    KWin::Region m_changedBelow;
 };
 
 }

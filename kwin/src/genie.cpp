@@ -109,6 +109,10 @@ void GenieEffect::animate(EffectWindow *w, bool minimizing)
         animation.timeLine.setDuration(animationTime(s_duration));
         animation.timeLine.setEasingCurve(QEasingCurve::Linear);
     }
+    // Which way it's going, for other effects: the glass leaves a window alone on its way.
+    const QVariant grabbed = QVariant::fromValue(static_cast<void *>(this));
+    w->setData(WindowMinimizedGrabRole, minimizing ? grabbed : QVariant());
+    w->setData(WindowUnminimizedGrabRole, minimizing ? QVariant() : grabbed);
     redirect(w);
     effects->addRepaintFull();
 }
@@ -187,6 +191,8 @@ void GenieEffect::postPaintScreen()
 {
     for (auto it = m_animations.begin(); it != m_animations.end();) {
         if (it->timeLine.done()) {
+            it.key()->setData(WindowMinimizedGrabRole, QVariant());
+            it.key()->setData(WindowUnminimizedGrabRole, QVariant());
             unredirect(it.key());
             it = m_animations.erase(it);
         } else {

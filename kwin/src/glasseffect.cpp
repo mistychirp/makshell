@@ -98,6 +98,8 @@ static constexpr int s_edgeRepaint = 2;
 static constexpr size_t s_spareRenders = 6;
 /// How long glass a client let go of stays if its window turns out not to be closing.
 static constexpr int s_releasedGlassMs = 1000;
+/// How long glass that's drawn again goes at most without blurring what's behind it again.
+static constexpr int s_reblurAnywayMs = 500;
 
 /// Saturation as a color matrix, applied to row vectors like KWin's blur does.
 static QMatrix4x4 saturationMatrix(float saturation)
@@ -142,6 +144,27 @@ GlassEffect::GlassEffect()
         }
     });
 
+    // What changes what's on screen, so glass knows when what's behind it has. Damage covers a
+    // window's surfaces, its decoration and its shadow; the rest is drawn differently or not at all.
+    const auto follow = [this](EffectWindow *w) {
+        connect(w, &EffectWindow::windowDamaged, this, [this](EffectWindow *w) {
+            m_damage[w] = ++m_damageCount;
+        });
+        connect(w, &EffectWindow::minimizedChanged, this, &GlassEffect::changedEverything);
+        connect(w, &EffectWindow::windowHiddenChanged, this, &GlassEffect::changedEverything);
+    };
+    for (EffectWindow *w : effects->stackingOrder()) {
+        follow(w);
+    }
+    connect(effects, &EffectsHandler::windowAdded, this, follow);
+    connect(effects, &EffectsHandler::windowAdded, this, &GlassEffect::changedEverything);
+    connect(effects, &EffectsHandler::windowClosed, this, &GlassEffect::changedEverything);
+    connect(effects, &EffectsHandler::stackingOrderChanged, this, &GlassEffect::changedEverything);
+    connect(effects, &EffectsHandler::showingDesktopChanged, this, &GlassEffect::changedEverything);
+    connect(effects, &EffectsHandler::desktopChanged, this, &GlassEffect::changedEverything);
+    connect(effects, &EffectsHandler::screenAdded, this, &GlassEffect::changedEverything);
+    connect(effects, &EffectsHandler::screenRemoved, this, &GlassEffect::changedEverything);
+
     // Glass can arrive before its window maps, and windows can go without dropping it.
     connect(effects, &EffectsHandler::windowAdded, this, &GlassEffect::placeDialog);
     connect(effects, &EffectsHandler::windowAdded, this, [this](EffectWindow *w) {
@@ -166,6 +189,14 @@ GlassEffect::GlassEffect()
         }
     });
     connect(effects, &EffectsHandler::windowDeleted, this, [this](EffectWindow *w) {
+        changedEverything();
+        m_damage.erase(w);
+        m_animatedNow.erase(w);
+        m_animatedLately.erase(w);
+        for (auto &[view, history] : m_history) {
+            history.looks.erase(w);
+            history.animated.erase(w);
+        }
         m_awaitingGlass.erase(w);
         if (auto it = m_windows.find(w); it != m_windows.end()) {
             effects->makeOpenGLContextCurrent();
@@ -178,6 +209,7 @@ GlassEffect::GlassEffect()
         for (auto &[window, glass] : m_windows) {
             glass.render.erase(view);
         }
+        m_history.erase(view);
     });
 
     // KWin's slide between desktops lifts every dock above all windows while it lasts, so that panels
@@ -341,6 +373,7 @@ void GlassEffect::reconfigure(ReconfigureFlags flags)
             updateAppGlass(w);
         }
     }
+    changedEverything();
     effects->addRepaintFull();
 }
 
@@ -531,6 +564,7 @@ void GlassEffect::updateAppGlass(EffectWindow *w)
     data.item->setPixelsToExpandRepaintsBelowOpaqueRegions(blurReach);
     data.item->setEffectBoundingRect(RectF(QPointF(), size));
     data.lastBounds = RectF(w->frameGeometry()).roundedOut();
+    data.changed = ++m_damageCount;
     w->addRepaintFull();
 }
 
@@ -565,6 +599,7 @@ void GlassEffect::updateSwitcherGlass(EffectWindow *w)
     data.item->setPixelsToExpandRepaintsBelowOpaqueRegions(std::ceil(m_settings.glassThickness * 2.4f));
     data.item->setEffectBoundingRect(RectF(Rect(rect)));
     data.lastBounds = Rect(rect).translated(w->pos().toPoint());
+    data.changed = ++m_damageCount;
     w->addRepaintFull();
 }
 
@@ -656,6 +691,7 @@ void GlassEffect::updateWindow(EffectWindow *w)
     const int blurReach = blurOffset * (1 << passes) * 2;
     data.item->setPixelsToExpandRepaintsBelowOpaqueRegions(std::ceil(m_settings.glassThickness * 2.4f) + blurReach);
     data.item->setEffectBoundingRect(bounds);
+    data.changed = ++m_damageCount;
     w->addRepaintFull();
 
     // Past the edges of where the glass was and now is, for the same reason as when it goes away.
@@ -752,6 +788,7 @@ static AppearState appearState(const WindowGlass &glass)
 void GlassEffect::prePaintScreen(ScreenPrePaintData &data)
 {
     m_currentView = data.view;
+    m_animatedNow.clear();
     for (const auto &[window, glass] : m_windows) {
         if (!appearState(glass).done) {
             data.mask |= PAINT_SCREEN_WITH_TRANSFORMED_WINDOWS;
@@ -767,7 +804,86 @@ PaintResult GlassEffect::paintScreen(const RenderTarget &renderTarget, const Ren
     const auto done = qScopeGuard([this] {
         m_screenTarget = nullptr;
     });
+
+    // Windows are drawn from the bottom up, and each adds what it changes to this, for the glass of
+    // the ones above. A whole screen drawn differently changes everything.
+    ViewHistory &history = m_history[m_currentView];
+    const bool everything = history.everything != m_everything || effects->activeFullScreenEffect() || (mask & PAINT_SCREEN_TRANSFORMED);
+    history.everything = m_everything;
+    m_changedBelow = everything ? Region::infinite() : Region();
+    // A window that's done animating may have been drawn anywhere last frame, and isn't now.
+    m_animatedLately = std::move(history.animated);
+    history.animated = m_animatedNow;
+    m_stackIndex.clear();
+    int index = 0;
+    for (EffectWindow *w : effects->stackingOrder()) {
+        m_stackIndex[w] = index++;
+    }
     return effects->paintScreen(renderTarget, viewport, mask, deviceRegion, screen);
+}
+
+void GlassEffect::changedEverything()
+{
+    ++m_everything;
+}
+
+bool GlassEffect::isMinimizing(EffectWindow *w)
+{
+    return w->data(WindowMinimizedGrabRole).isValid() || w->data(WindowUnminimizedGrabRole).isValid();
+}
+
+bool GlassEffect::behindChanged(EffectWindow *w) const
+{
+    if (m_changedBelow.intersects(w->expandedGeometry().roundedOut())) {
+        return true;
+    }
+    const auto history = m_history.find(m_currentView);
+    const auto glass = m_windows.find(w);
+    if (history == m_history.end() || glass == m_windows.end()) {
+        return true;
+    }
+    const auto look = history->second.looks.find(w);
+    if (look == history->second.looks.end() || look->second.glass != glass->second.changed) {
+        return true;
+    }
+    // An animated window below may be drawn anywhere: the genie's goes all the way to the dock. One
+    // that's gone from the stacking order was below everything left.
+    const auto index = m_stackIndex.find(w);
+    const auto below = [&](EffectWindow *animated) {
+        if (animated == w) {
+            return true;
+        }
+        const auto other = m_stackIndex.find(animated);
+        return other == m_stackIndex.end() || index == m_stackIndex.end() || other->second < index->second;
+    };
+    return std::ranges::any_of(m_animatedNow, below) || std::ranges::any_of(m_animatedLately, below);
+}
+
+void GlassEffect::noteDrawn(EffectWindow *w, const WindowPaintData &data, bool reblurred)
+{
+    const auto damage = m_damage.find(w);
+    const auto glass = m_windows.find(w);
+    const WindowLook now{
+        .geometry = w->expandedGeometry(),
+        .opacity = data.opacity(),
+        .brightness = data.brightness(),
+        .saturation = data.saturation(),
+        .xScale = data.xScale(),
+        .yScale = data.yScale(),
+        .translation = data.translation(),
+        .damage = damage == m_damage.end() ? 0 : damage->second,
+        .glass = glass == m_windows.end() ? 0 : glass->second.changed,
+    };
+    auto [look, added] = m_history[m_currentView].looks.try_emplace(w, now);
+    if (added || !look->second.sameAs(now) || look->second.damage != now.damage || reblurred) {
+        if (now.xScale != 1 || now.yScale != 1 || !now.translation.isNull()) {
+            // Scaled or moved by an effect: somewhere around where it is, but that's all that's known.
+            m_changedBelow = Region::infinite();
+        } else {
+            m_changedBelow |= (look->second.geometry | now.geometry).roundedOut();
+        }
+    }
+    look->second = now;
 }
 
 void GlassEffect::prePaintWindow(RenderView *view, EffectWindow *w, WindowPrePaintData &data)
@@ -783,6 +899,9 @@ void GlassEffect::prePaintWindow(RenderView *view, EffectWindow *w, WindowPrePai
         data.setTranslucent();
     }
     effects->prePaintWindow(view, w, data);
+    if (data.mask & PAINT_WINDOW_TRANSFORMED) {
+        m_animatedNow.insert(w);
+    }
     // Moved, resized or animated by another effect, the window looks different without being
     // damaged. Its own picture is drawn again every frame until it's settled, then once more, with
     // its backgrounds looked for in that, or a frame from in between would stay.
@@ -862,9 +981,14 @@ void GlassEffect::postPaintScreen()
 
 PaintResult GlassEffect::drawWindow(const RenderTarget &renderTarget, const RenderViewport &viewport, EffectWindow *w, int mask, const Region &deviceRegion, WindowPaintData &data)
 {
-    paintGlass(renderTarget, viewport, w, deviceRegion, data);
-    // The glass is behind the window as it is; the window itself lets some of it through.
-    if (auto it = m_windows.find(w); it != m_windows.end() && it->second.dim) {
+    const bool onScreen = &renderTarget == m_screenTarget;
+    const bool reblurred = paintGlass(renderTarget, viewport, w, deviceRegion, data, onScreen && m_windows.contains(w) && behindChanged(w));
+    if (onScreen) {
+        noteDrawn(w, data, reblurred);
+    }
+    // The glass is behind the window as it is; the window itself lets some of it through. On its way
+    // to the dock and back, it has no glass, and nothing shows through it either.
+    if (auto it = m_windows.find(w); it != m_windows.end() && it->second.dim && !isMinimizing(w)) {
         if (it->second.keyed && &renderTarget == m_screenTarget
             && drawKeyed(renderTarget, viewport, w, deviceRegion, data, *it->second.keyed)) {
             return MAKSHELL_PAINTED;
@@ -1194,12 +1318,13 @@ float GlassEffect::measureLuminance(ShapeRender &render, bool linear)
     return total / (image.width() * image.height());
 }
 
-void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewport &viewport, EffectWindow *w, const Region &deviceRegion, const WindowPaintData &data)
+bool GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewport &viewport, EffectWindow *w, const Region &deviceRegion, const WindowPaintData &data, bool behindChanged)
 {
     auto it = m_windows.find(w);
     if (it == m_windows.end()) {
-        return;
+        return false;
     }
+    bool reblurred = false;
     // Gone once the surface is, while the window finishes closing.
     GlassSurface *glass = w->surface() ? m_manager->glassFor(w->surface()) : nullptr;
     const QList<Shape> &shapes = it->second.shapes;
@@ -1216,6 +1341,10 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
     const QPointF offset = w->bufferGeometry().topLeft() - w->frameGeometry().topLeft();
     const float opacity = w->opacity() * data.opacity();
     const float scale = std::min(data.xScale(), data.yScale());
+    // On its way to the dock and back, a window has no glass, as on Tahoe, and nothing shows through
+    // it: one that's see-through by itself, like a terminal, is backed by little more than the color
+    // of what was behind it.
+    const bool minimizing = isMinimizing(w);
 
     for (qsizetype i = 0; i < shapes.size(); ++i) {
         const Shape &shape = shapes[i];
@@ -1304,6 +1433,16 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
             // New textures start out empty; fill them in on the next frame.
             effects->addRepaint(logicalBounds);
         }
+        // Whether that copied any of the background for the first time.
+        bool filledMore = false;
+        if (!offscreen) {
+            if (fresh) {
+                render.filled = Region();
+            }
+            const Region copied = repainted.translated(-deviceRect.topLeft());
+            filledMore = !(copied - render.filled).isEmpty();
+            render.filled |= copied;
+        }
 
         if (probe && !offscreen) {
             if (const int wait = glass->msUntilProbe(); wait == 0) {
@@ -1326,8 +1465,16 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
             continue;
         }
 
-        if (blurred && !offscreen) {
+        // Blurring is most of the work, and what's behind is mostly as it was, even when the glass is
+        // drawn again for what's in front. Now and then it's blurred anyway, in case a change went
+        // unnoticed.
+        const bool reblur = behindChanged || filledMore || fresh || render.blurredAt != deviceRect
+            || !render.blurred.isValid() || render.blurred.elapsed() >= s_reblurAnywayMs;
+        if (blurred && !offscreen && reblur) {
             frost(render, passes, frosted ? m_settings.frostOffset : m_settings.blurOffset);
+            render.blurredAt = deviceRect;
+            render.blurred.start();
+            reblurred = true;
         }
 
         // Draw where the window is being repainted, in device pixels relative to the shape.
@@ -1431,7 +1578,7 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         glActiveTexture(GL_TEXTURE1);
         render.textures[blurred ? wideLevel : 0]->bind();
         glActiveTexture(GL_TEXTURE0);
-        render.textures[chip ? wideLevel : blurred ? 1 : 0]->bind();
+        render.textures[minimizing ? render.textures.size() - 1 : chip ? wideLevel : blurred ? 1 : 0]->bind();
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         vbo->draw(GL_TRIANGLES, 0, vertexCount);
@@ -1444,6 +1591,7 @@ void GlassEffect::paintGlass(const RenderTarget &renderTarget, const RenderViewp
         ShaderManager::instance()->popShader();
         vbo->unbindArrays();
     }
+    return reblurred;
 }
 
 bool GlassEffect::isActive() const

@@ -225,14 +225,18 @@ void main(void)
         discard;
     }
 
-    // Outward surface normal from the SDF gradient.
-    vec2 e = vec2(0.5, 0.0);
-    vec2 n = vec2(
-        sdWhole(level + e.xy, boxHalf, cornerRadius) - sdWhole(level - e.xy, boxHalf, cornerRadius),
-        sdWhole(level + e.yx, boxHalf, cornerRadius) - sdWhole(level - e.yx, boxHalf, cornerRadius));
-    // Back to the screen's coordinates, where the background and the light are.
-    n = vec2(n.x * turnCos - n.y * turnSin, n.x * turnSin + n.y * turnCos);
-    n = length(n) > 0.0 ? normalize(n) : vec2(0.0);
+    // Outward surface normal from the SDF gradient, which only the lens and rims need: four more
+    // distances for every pixel, which plain frosted glass, like an app's window, does without.
+    vec2 n = vec2(0.0);
+    if (thickness > 0.0 || rim > 0.0 || rimSoft > 0.0) {
+        vec2 e = vec2(0.5, 0.0);
+        n = vec2(
+            sdWhole(level + e.xy, boxHalf, cornerRadius) - sdWhole(level - e.xy, boxHalf, cornerRadius),
+            sdWhole(level + e.yx, boxHalf, cornerRadius) - sdWhole(level - e.yx, boxHalf, cornerRadius));
+        // Back to the screen's coordinates, where the background and the light are.
+        n = vec2(n.x * turnCos - n.y * turnSin, n.x * turnSin + n.y * turnCos);
+        n = length(n) > 0.0 ? normalize(n) : vec2(0.0);
+    }
 
     vec2 refracted = geo;
     vec3 surface = vec3(0.0, 0.0, 1.0);
