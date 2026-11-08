@@ -97,8 +97,6 @@ enum Surface {
     Banners,
     /// The strip along the top that brings the menu bar down over a full-screen window.
     FullScreenTrigger,
-    /// The title bar that comes down under the menu bar over a full-screen window.
-    FullScreenTitle,
 }
 
 #[to_layer_message(multi)]
@@ -168,6 +166,9 @@ pub enum Message {
     PointerReleased(IcedId),
     /// A button was pressed on a surface, and no widget there took it.
     SurfacePressed(IcedId),
+    /// The pointer came onto a surface, which may be all it does: pushed against the top of the
+    /// screen, it doesn't move any more.
+    PointerEntered(IcedId),
     /// The pointer left a surface.
     PointerLeft(IcedId),
     /// Time to see whether the bars over a full-screen window should go back up.
@@ -975,18 +976,6 @@ impl Shell {
                 }
                 Surface::MenuBar => format!("{:?}", self.bar()),
                 Surface::FullScreenTrigger => continue,
-                Surface::FullScreenTitle => match &self.full_screen {
-                    Some(open) => format!(
-                        "{:?} {} {}",
-                        self.windows
-                            .iter()
-                            .find(|w| w.id == open.window)
-                            .and_then(|w| w.title.as_deref()),
-                        open.lights_hovered,
-                        open.title_width
-                    ),
-                    None => String::new(),
-                },
                 Surface::Dock => {
                     format!(
                         "{:?} {:?} {:?} {:?} {:?} {} {:?}",
@@ -1312,10 +1301,11 @@ impl Shell {
                     at: self.dock_cursor,
                 });
             }
-            Message::PointerMoved(id, _) if self.is_full_screen_bar(id) => {
+            Message::PointerMoved(id, _) | Message::PointerEntered(id)
+                if self.is_full_screen_bar(id) =>
+            {
                 if let Some(open) = &mut self.full_screen {
-                    open.hovered = true;
-                    open.left_at = None;
+                    open.pointer_on(id);
                     if id == open.trigger && !open.is_shown() {
                         log::debug!("the pointer's at the top: down come the bars");
                         open.show();
@@ -1324,16 +1314,17 @@ impl Shell {
             }
             Message::PointerLeft(id) if self.is_full_screen_bar(id) => {
                 if let Some(open) = &mut self.full_screen {
-                    open.hovered = false;
-                    open.left_at = Some(Instant::now());
-                    return full_screen_check_later();
+                    open.pointer_off(id);
+                    if !open.is_hovered() {
+                        return full_screen_check_later();
+                    }
                 }
             }
-            Message::PointerLeft(_) => {}
+            Message::PointerLeft(_) | Message::PointerEntered(_) => {}
             Message::FullScreenCheck => {
                 if let Some(open) = &mut self.full_screen
                     && open.is_shown()
-                    && !open.hovered
+                    && !open.is_hovered()
                 {
                     // Not while one of the bar's menus is open, which the pointer's on instead.
                     if self.popup.is_some() {
@@ -1358,29 +1349,6 @@ impl Shell {
             Message::FullScreenExit => {
                 if let Some(open) = &self.full_screen {
                     kwin::leave_full_screen(open.window);
-                }
-            }
-            Message::SurfaceOpened(id, size)
-                if self.surfaces.get(&id) == Some(&Surface::FullScreenTitle) =>
-            {
-                if let Some(open) = &mut self.full_screen {
-                    open.title_width = size.width;
-                }
-                return self.reach_surface(id);
-            }
-            Message::SurfaceResized(id, size)
-                if self.surfaces.get(&id) == Some(&Surface::FullScreenTitle) =>
-            {
-                if let Some(open) = &mut self.full_screen {
-                    open.title_width = size.width;
-                }
-                if let (Some(material), Some(target)) = (
-                    &self.material,
-                    self.full_screen
-                        .as_ref()
-                        .and_then(|open| open.title_material.as_ref()),
-                ) {
-                    material.set_shapes(target, &full_screen::title_shapes(size.width));
                 }
             }
             Message::PointerMoved(id, point) if id == self.dock_id => {
@@ -3018,13 +2986,6 @@ impl Shell {
                 _ => target.destroy(),
             },
             Some(Surface::FullScreenTrigger) => target.destroy(),
-            Some(Surface::FullScreenTitle) => match &mut self.full_screen {
-                Some(open) if open.title_bar == id => {
-                    material.set_shapes(&target, &full_screen::title_shapes(open.title_width));
-                    open.title_material = Some(target);
-                }
-                _ => target.destroy(),
-            },
             Some(Surface::Hud) => match &mut self.hud {
                 Some(open) if open.id == id => {
                     material.set_appear(&target, material::Appear::Fade);
@@ -3116,7 +3077,7 @@ impl Shell {
     fn is_full_screen_bar(&self, id: IcedId) -> bool {
         self.full_screen
             .as_ref()
-            .is_some_and(|open| id == open.trigger || id == open.title_bar || id == self.menubar_id)
+            .is_some_and(|open| id == open.trigger || id == self.menubar_id)
     }
 
     /// Puts the menu bar over the focused window while it's full screen, out of sight until the
@@ -3136,11 +3097,8 @@ impl Shell {
                 log::debug!("window {window} is full screen; the menu bar waits at the top");
                 let (trigger, open_trigger) =
                     Message::layershell_open(full_screen::trigger_settings());
-                let (title_bar, open_title) =
-                    Message::layershell_open(full_screen::title_settings());
                 self.surfaces.insert(trigger, Surface::FullScreenTrigger);
-                self.surfaces.insert(title_bar, Surface::FullScreenTitle);
-                let open = full_screen::FullScreen::new(window, trigger, title_bar);
+                let open = full_screen::FullScreen::new(window, trigger);
                 let offset = open.offset();
                 self.full_screen = Some(open);
                 self.set_menubar_shapes();
@@ -3154,7 +3112,6 @@ impl Shell {
                         margin: (offset, 0, 0, 0),
                     }),
                     open_trigger,
-                    open_title,
                 ])
             }
             (None, Some(_)) => {
@@ -3162,13 +3119,9 @@ impl Shell {
                 let Some(open) = self.full_screen.take() else {
                     return Task::none();
                 };
-                if let Some(material) = open.title_material {
-                    material.destroy();
-                }
                 self.set_menubar_shapes();
                 Task::batch([
                     Task::done(Message::RemoveWindow(open.trigger)),
-                    Task::done(Message::RemoveWindow(open.title_bar)),
                     Task::done(Message::LayerChange {
                         id: self.menubar_id,
                         layer: Layer::Top,
@@ -3183,31 +3136,30 @@ impl Shell {
         }
     }
 
-    /// Moves the menu bar and the title bar under it to where they are on their way down or up.
+    /// Moves the menu bar to where it is on its way down or up.
     fn place_full_screen_bars(&mut self) -> Task<Message> {
         let menubar_id = self.menubar_id;
         let Some(open) = &mut self.full_screen else {
             return Task::none();
         };
+        // Moving the bar doesn't draw it, and frames only come at the display's pace from drawing:
+        // without this, they'd come from the fallback timer, at about 30 a second.
+        if open.is_moving() {
+            iced_layershell::redraw::mark_changed(menubar_id);
+        }
         let offset = open.offset();
         if open.placed == Some(offset) {
             return Task::none();
         }
         open.placed = Some(offset);
-        Task::batch([
-            Task::done(Message::MarginChange {
-                id: menubar_id,
-                margin: (offset, 0, 0, 0),
-            }),
-            Task::done(Message::MarginChange {
-                id: open.title_bar,
-                margin: (offset + menubar::HEIGHT as i32, 0, 0, 0),
-            }),
-        ])
+        Task::done(Message::MarginChange {
+            id: menubar_id,
+            margin: (offset, 0, 0, 0),
+        })
     }
 
     /// The menu bar's glass: none, normally, so the wallpaper shows; frosted over a full-screen
-    /// window, like the title bar under it.
+    /// window.
     fn set_menubar_shapes(&self) {
         if let (Some(material), Some(target)) = (&self.material, &self.menubar_material) {
             material.set_shapes(
@@ -3274,6 +3226,7 @@ impl Shell {
                 }),
             tray: &self.tray,
             app_menus: &self.app_menu_titles,
+            lights: self.full_screen.as_ref().map(|open| open.lights_hovered),
         }
     }
 
@@ -4868,18 +4821,6 @@ impl Shell {
             Some(Surface::FullScreenTrigger) => {
                 Space::new().width(Length::Fill).height(Length::Fill).into()
             }
-            Some(Surface::FullScreenTitle) => match &self.full_screen {
-                Some(open) => {
-                    let title = self
-                        .windows
-                        .iter()
-                        .find(|w| w.id == open.window)
-                        .and_then(|w| w.title.as_deref())
-                        .unwrap_or_default();
-                    full_screen::title_view(title, open.lights_hovered)
-                }
-                None => Space::new().into(),
-            },
             Some(Surface::Fan) => match &self.fan {
                 Some(open) => open.view(),
                 None => Space::new().into(),
@@ -5112,6 +5053,7 @@ impl Shell {
                 Event::Mouse(mouse::Event::CursorMoved { position }) => {
                     Some(Message::PointerMoved(id, position))
                 }
+                Event::Mouse(mouse::Event::CursorEntered) => Some(Message::PointerEntered(id)),
                 Event::Mouse(mouse::Event::CursorLeft) => Some(Message::PointerLeft(id)),
                 Event::Mouse(mouse::Event::ButtonPressed(_))
                     if status == event::Status::Ignored =>

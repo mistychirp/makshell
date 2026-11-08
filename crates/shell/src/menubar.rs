@@ -209,6 +209,8 @@ pub struct Bar<'a> {
     pub tray: &'a [tray::Icon],
     /// The names of the focused app's menus.
     pub app_menus: &'a [String],
+    /// Over a full-screen window, its traffic lights come first: whether they're hovered.
+    pub lights: Option<bool>,
 }
 
 impl Bar<'_> {
@@ -223,14 +225,23 @@ impl Bar<'_> {
             height: TITLE_HEIGHT,
         };
 
+        let lights = if self.lights.is_some() {
+            crate::full_screen::LIGHTS_WIDTH
+        } else {
+            0.0
+        };
         let system = rect(PADDING_X, LOGO_SIZE + 2.0 * TITLE_PADDING_X);
         let app_width =
             (menu::text_width(self.app_name, TEXT_SIZE, BOLD) + 2.0 * TITLE_PADDING_X).ceil();
         let mut titles = vec![
             (Title::System, system),
-            (Title::App, rect(system.x + system.width, app_width)),
+            // A full-screen window's traffic lights are between the logo and the app's name.
+            (
+                Title::App,
+                rect(system.x + system.width + lights, app_width),
+            ),
         ];
-        let mut left_end = system.x + system.width + app_width;
+        let mut left_end = system.x + system.width + lights + app_width;
 
         // Status items line up leftward from the clock.
         let mut x = self.width - PADDING_X - self.clock_width();
@@ -440,7 +451,13 @@ pub fn view<'a>(bar: &Bar<'a>) -> Element<'a> {
         };
         let item = title_item(title, content, rect, bar.open, highlight);
         match title {
-            Title::System | Title::App | Title::AppMenu(_) => left = left.push(item),
+            Title::System => {
+                left = left.push(item);
+                if let Some(hovered) = bar.lights {
+                    left = left.push(crate::full_screen::lights(hovered));
+                }
+            }
+            Title::App | Title::AppMenu(_) => left = left.push(item),
             // Laid out right to left, so each one goes in front of the last.
             _ => right.insert(0, item),
         }
