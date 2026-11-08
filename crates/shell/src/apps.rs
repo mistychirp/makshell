@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::rc::Rc;
 use std::thread;
 use std::{env, fs};
@@ -295,12 +295,19 @@ fn rasterize_svg_at(path: &Path, size: u32) -> Option<(u32, u32, Vec<u8>)> {
 }
 
 /// Starts a program apart from the shell: in its own process group, so it outlives the shell
-/// and doesn't get its signals, and reaped in the background.
+/// and doesn't get its signals, and reaped in the background. It gets no terminal to read from:
+/// the shell's is the console the session started on, which KWin has, and nobody can type into.
+/// Something asking there, like loginctl's password prompt, would wait forever.
 pub fn spawn(command: Vec<String>) {
     let Some((program, args)) = command.split_first() else {
         return;
     };
-    match Command::new(program).args(args).process_group(0).spawn() {
+    match Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .process_group(0)
+        .spawn()
+    {
         Ok(mut child) => {
             thread::spawn(move || child.wait());
         }

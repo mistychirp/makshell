@@ -5,6 +5,7 @@
 //! it.
 
 use std::fs;
+use std::process::{Command, Stdio};
 
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings};
 use iced_widget::core::text::Wrapping;
@@ -132,31 +133,57 @@ impl SystemAction {
     }
 
     pub fn run(self) {
-        // Logging out ends the login session, which takes KWin and every app with it.
-        let session = std::env::var("XDG_SESSION_ID").unwrap_or_default();
         let command: &[&str] = match self {
             SystemAction::Sleep => &["systemctl", "suspend"],
             SystemAction::Restart => &["systemctl", "reboot"],
             SystemAction::ShutDown => &["systemctl", "poweroff"],
             SystemAction::Lock => &["loginctl", "lock-session"],
-            SystemAction::LogOut if session.is_empty() => {
-                log::error!("can't log out: XDG_SESSION_ID isn't set");
+            SystemAction::LogOut => {
+                std::thread::spawn(log_out);
                 return;
             }
-            // The portals are services that outlive the session, and without a display KDE's aborts.
-            // Its crash reporter then does the same, over and over, since each crash starts another:
-            // dozens of crashes, and a Notification Center full of them at the next login.
-            SystemAction::LogOut => &[
-                "sh",
-                "-c",
-                "systemctl --user stop plasma-xdg-desktop-portal-kde.service xdg-desktop-portal.service; \
-                 exec loginctl terminate-session \"$1\"",
-                "sh",
-                &session,
-            ],
         };
         apps::spawn(command.iter().map(|arg| arg.to_string()).collect());
     }
+}
+
+/// Ends the login session, which takes KWin and every app with it. If logind won't, the shell
+/// quits, which the session's startup script takes as the end of the session, and KWin goes with
+/// it; apps then lose their windows and close.
+fn log_out() {
+    // The portals are services that outlive the session, and without a display KDE's aborts. Its
+    // crash reporter then does the same, over and over, since each crash starts another: dozens of
+    // crashes, and a Notification Center full of them at the next login.
+    let stopped = Command::new("systemctl")
+        .args([
+            "--user",
+            "stop",
+            "plasma-xdg-desktop-portal-kde.service",
+            "xdg-desktop-portal.service",
+        ])
+        .stdin(Stdio::null())
+        .status();
+    if let Err(err) = stopped {
+        log::warn!("can't stop the portals: {err}");
+    }
+    let session = std::env::var("XDG_SESSION_ID").unwrap_or_default();
+    if session.is_empty() {
+        log::warn!("XDG_SESSION_ID isn't set, so the shell quits to log out");
+    } else {
+        // Never a password prompt: there's nowhere to answer one, and it would wait forever.
+        match Command::new("loginctl")
+            .args(["--no-ask-password", "terminate-session", &session])
+            .stdin(Stdio::null())
+            .status()
+        {
+            Ok(status) if status.success() => return,
+            Ok(status) => {
+                log::warn!("loginctl couldn't end the session ({status}), so the shell quits")
+            }
+            Err(err) => log::warn!("can't run loginctl ({err}), so the shell quits"),
+        }
+    }
+    std::process::exit(0);
 }
 
 pub fn settings() -> NewLayerShellSettings {
