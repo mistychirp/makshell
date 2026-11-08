@@ -52,13 +52,17 @@ imageBgTransparent: {{surface}};
 
 activeButtonBg: {{primary}}; // Active button background
 activeButtonBgOver: {{primary_container}}; // Active button hover background
-activeButtonBgRipple: {{on_primary_container}}; // Active button ripple
+activeButtonBgRipple: {{on_primary}}33; // Active button ripple: a tint of its text
 activeButtonFg: {{on_primary}}; // Active button text
 activeButtonFgOver: {{on_primary_container}}; // Active button hover text
 activeButtonSecondaryFg: {{on_primary}}; // Active button secondary text
 activeButtonSecondaryFgOver: {{on_primary_container}}; // Active button secondary hover text
 activeLineFg: {{on_surface}};
 dialogsBgActive: {{secondary_container}};
+dialogsRippleBgActive: {{on_secondary_container}}26; // Selected chat ripple: a tint of its text
+dialogsUnreadBgMuted: {{outline}}; // Muted unread badge
+dialogsUnreadBgMutedOver: {{outline}};
+dialogsUnreadBgMutedActive: {{on_secondary_container}};
 dialogsNameFg: {{on_surface}}; // Chat list name text
 dialogsNameFgActive: {{on_surface}}; // Selected chat name text (same as bubble text)
 dialogsTextFgActive: {{on_surface}}; // Selected chat preview text (same as bubble text)
@@ -84,7 +88,7 @@ lightButtonFgOver: {{on_surface_variant}}; // Light button hover text
 attentionButtonFg: {{error}};
 attentionButtonFgOver: {{error}};
 attentionButtonBgOver: {{error_container}};
-attentionButtonBgRipple: {{on_error_container}};
+attentionButtonBgRipple: {{on_error_container}}33;
 
 outlineButtonBg: {{surface}}; // Outline button background
 outlineButtonBgOver: {{surface_variant}}; // Outline button hover background
@@ -164,3 +168,11 @@ photoCropPointFg: {{primary}}; // Photo crop points
 
 chat_inBubbleSelected: {{surface_container_highest}}; // inbox selected chat background
 chat_outBubbleSelected: {{surface_container_highest}}; // outbox selected chat background
+
+// Where Telegram's own defaults are light colors, which a dark palette would leave glaring.
+msgInBgSelected: {{surface_container_highest}}; // Selected incoming message
+tooltipBg: {{surface_container_highest}};
+tooltipFg: {{on_surface}};
+tooltipBorderFg: {{outline_variant}};
+sliderBgInactive: {{surface_variant}};
+stickerPreviewBg: {{surface}}b0;
