@@ -73,15 +73,37 @@ check_runtime() {
     missing=""
     python3 -c 'import PIL' 2>/dev/null || missing="$pillow"
     command -v rsvg-convert >/dev/null || missing="${missing:+$missing }$rsvg"
-    [ -z "$missing" ] && return
-    printf '\n'
-    say "The macOS app icons can't be made without: $missing"
-    if [ -n "$install" ]; then
-        say "Install it, then log in again:  $install $missing"
-    else
-        say "Install Python's Pillow and rsvg-convert with your package manager, then log in again."
+    if [ -n "$missing" ]; then
+        printf '\n'
+        say "The macOS app icons can't be made without: $missing"
+        if [ -n "$install" ]; then
+            say "Install it, then log in again:  $install $missing"
+        else
+            say "Install Python's Pillow and rsvg-convert with your package manager, then log in again."
+        fi
     fi
-    printf '\n'
+
+    # Settings opens KDE's own pages for these, which come with Plasma's packages, by the same
+    # names on Arch, Debian, Ubuntu and Fedora.
+    pages=""
+    if command -v kcmshell6 >/dev/null; then
+        modules=$(kcmshell6 --list 2>/dev/null)
+        for page in kcm_networkmanagement:plasma-nm kcm_bluetooth:bluedevil kcm_pulseaudio:plasma-pa \
+                    kcm_kscreen:kscreen kcm_keyboard:plasma-desktop; do
+            printf '%s\n' "$modules" | grep -q "^${page%%:*} " || pages="${pages:+$pages }${page#*:}"
+        done
+    else
+        pages="systemsettings plasma-nm bluedevil plasma-pa kscreen plasma-desktop"
+    fi
+    if [ -n "$pages" ]; then
+        printf '\n'
+        say "Settings' Wi-Fi, Bluetooth, Sound, Displays and Keyboard pages need: $pages"
+        if [ -n "$install" ]; then
+            say "Install them with:  $install $pages"
+        fi
+    fi
+    [ -n "$missing$pages" ] && printf '\n'
+    return 0
 }
 
 fetch_cursor() {

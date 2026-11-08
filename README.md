@@ -30,6 +30,8 @@ KWin's configuration with Plasma, so you can switch between them.
 - A GPU with Vulkan or OpenGL.
 - For the menu bar and Control Center: NetworkManager, BlueZ and WirePlumber.
 - For the app icons: Python 3 with Pillow, and `rsvg-convert`.
+- For Settings' Wi-Fi, Bluetooth, Sound, Displays and Keyboard pages, which are KDE's: System
+  Settings, and Plasma's `plasma-nm`, `bluedevil`, `plasma-pa`, `kscreen` and `plasma-desktop`.
 
 ## Installation
 
@@ -57,7 +59,8 @@ sudo pacman -S --needed base-devel git rust cmake extra-cmake-modules pkgconf \
     kconfig kcoreaddons kglobalaccel kwindowsystem \
     wayland libepoxy libdrm vulkan-headers libxkbcommon \
     kscreenlocker xdg-desktop-portal-kde polkit-kde-agent kwallet-pam \
-    networkmanager bluez wireplumber python-pillow librsvg curl
+    networkmanager bluez wireplumber python-pillow librsvg curl \
+    systemsettings plasma-nm bluedevil plasma-pa kscreen plasma-desktop
 ```
 
 Then [build and install](#build-and-install). Rebuild makshell after KWin updates (see
@@ -76,7 +79,8 @@ sudo apt install build-essential git cmake extra-cmake-modules pkg-config \
     libkf6config-dev libkf6coreaddons-dev libkf6globalaccel-dev libkf6windowsystem-dev \
     libwayland-dev libepoxy-dev libdrm-dev libvulkan-dev libxkbcommon-dev \
     kwin-wayland kscreenlocker xdg-desktop-portal-kde polkit-kde-agent-1 \
-    network-manager bluez wireplumber python3-pil librsvg2-bin libgtk-3-bin curl
+    network-manager bluez wireplumber python3-pil librsvg2-bin libgtk-3-bin curl \
+    systemsettings plasma-nm bluedevil plasma-pa kscreen plasma-desktop
 ```
 
 Package names shift between releases; if one isn't found, `apt search` for it. Then
