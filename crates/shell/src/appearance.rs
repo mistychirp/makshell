@@ -254,23 +254,70 @@ impl Palette {
             let toned: Hct = harmonize(design, source).into();
             Hct::from(toned.get_hue(), toned.get_chroma(), tone).into()
         };
+        // Text on a container color. The content scheme only gives it the least contrast that's
+        // readable, which is tiring in a terminal's selection: this keeps its hue, and the way it
+        // goes, lighter or darker than the container, and goes on until it's comfortable.
+        let on_container = |text: Rgb, container: Rgb| -> Rgb {
+            let text_hct: Hct = text.into();
+            let container_hct: Hct = container.into();
+            let behind = luminance([container.red, container.green, container.blue]);
+            let contrast = |rgb: &Rgb| {
+                let front = luminance([rgb.red, rgb.green, rgb.blue]);
+                (front.max(behind) + 0.05) / (front.min(behind) + 0.05)
+            };
+            let lighter = text_hct.get_tone() > container_hct.get_tone();
+            let tone = |tone: f64| -> Rgb {
+                Hct::from(text_hct.get_hue(), text_hct.get_chroma(), tone).into()
+            };
+            let tones = if lighter {
+                [90.0, 95.0, 98.0, 100.0]
+            } else {
+                [10.0, 5.0, 2.0, 0.0]
+            };
+            tones
+                .into_iter()
+                .map(tone)
+                .find(|candidate| contrast(candidate) >= 7.0)
+                // A vivid container, like macOS blue's, is too mid-toned for that either way:
+                // then whichever end reads better.
+                .unwrap_or_else(|| {
+                    let (light, dark) = (tone(100.0), tone(0.0));
+                    if contrast(&light) >= contrast(&dark) {
+                        light
+                    } else {
+                        dark
+                    }
+                })
+        };
         let mut roles = vec![
             ("primary", s.primary),
             ("on_primary", s.on_primary),
             ("primary_container", s.primary_container),
-            ("on_primary_container", s.on_primary_container),
+            (
+                "on_primary_container",
+                on_container(s.on_primary_container, s.primary_container),
+            ),
             ("secondary", s.secondary),
             ("on_secondary", s.on_secondary),
             ("secondary_container", s.secondary_container),
-            ("on_secondary_container", s.on_secondary_container),
+            (
+                "on_secondary_container",
+                on_container(s.on_secondary_container, s.secondary_container),
+            ),
             ("tertiary", s.tertiary),
             ("on_tertiary", s.on_tertiary),
             ("tertiary_container", s.tertiary_container),
-            ("on_tertiary_container", s.on_tertiary_container),
+            (
+                "on_tertiary_container",
+                on_container(s.on_tertiary_container, s.tertiary_container),
+            ),
             ("error", s.error),
             ("on_error", s.on_error),
             ("error_container", s.error_container),
-            ("on_error_container", s.on_error_container),
+            (
+                "on_error_container",
+                on_container(s.on_error_container, s.error_container),
+            ),
             ("surface", s.surface),
             ("surface_dim", s.surface_dim),
             ("surface_bright", s.surface_bright),
@@ -478,10 +525,16 @@ fn read_state(line: &str) -> (bool, bool, Option<String>) {
     }
 }
 
-/// Changes when a template does, built in or the user's, which means files have to be written again.
+/// Goes up when the palette's roles come out differently for the same seed, so the files made
+/// from it are written again.
+const PALETTE_VERSION: u32 = 2;
+
+/// Changes when a template does, built in or the user's, or the palette, which means files have to
+/// be written again.
 fn templates_fingerprint() -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    PALETTE_VERSION.hash(&mut hasher);
     for template in [
         KDE_TEMPLATE,
         GTK3_TEMPLATE,
@@ -1446,8 +1499,23 @@ mod tests {
             };
             assert!(contrast("on_surface", "surface") > 7.0);
             assert!(contrast("on_primary", "primary") > 4.5);
+            for role in ["primary", "secondary", "tertiary", "error"] {
+                let on = format!("on_{role}_container");
+                assert!(contrast(&on, &format!("{role}_container")) > 4.5);
+            }
             assert!(contrast("term_red", "surface") > 4.5);
         }
+    }
+
+    #[test]
+    fn a_selection_is_comfortable_to_read() {
+        // The dark purple a wallpaper gave, whose container is dark too: a terminal's selection.
+        let palette = Palette::from_seed([0x32, 0x1a, 0x66], true);
+        let (text, behind) = (
+            luminance(palette.role("on_primary_container").unwrap()),
+            luminance(palette.role("primary_container").unwrap()),
+        );
+        assert!((text.max(behind) + 0.05) / (text.min(behind) + 0.05) >= 7.0);
     }
 
     #[test]
