@@ -28,8 +28,11 @@ Item {
     // Points of a 1080-point-tall screen, which is what the sizes below are measured on.
     readonly property real u: Math.max(0.6, height / 1080)
     readonly property string family: interRegular.status === FontLoader.Ready ? interRegular.font.family : "sans-serif"
-    // After a wrong password, nothing's taken for a moment.
-    readonly property bool waiting: authenticator.graceLocked || graceTimer.running
+    // After a wrong password, nothing's taken for a moment. Plasma 6.7 says so as graceLocked, 6.8
+    // as inPasswordDelay; on either, the other is undefined, which counts as false.
+    readonly property bool waiting: authenticator.graceLocked || authenticator.inPasswordDelay || graceTimer.running
+    // What was typed and sent before PAM asked for it, to give it when it does.
+    property string pending: ""
     property date now: new Date()
     // There was nothing to type, like with a fingerprint: it's unlocked, once that's pressed.
     property bool unlockedWithoutPassword: false
@@ -52,6 +55,7 @@ Item {
             if (kind !== 0) {
                 return;
             }
+            root.pending = "";
             password.text = "";
             shake.restart();
             graceTimer.restart();
@@ -65,7 +69,37 @@ Item {
         }
         function onInfoMessageChanged() { root.notification = authenticator.infoMessage; }
         function onErrorMessageChanged() { root.notification = authenticator.errorMessage; }
-        function onPromptForSecretChanged() { password.forceActiveFocus(); }
+        function onPromptForSecretChanged() {
+            password.forceActiveFocus();
+            if (authenticator.promptForSecret && root.pending.length > 0) {
+                authenticator.respond(root.pending);
+                root.pending = "";
+            }
+        }
+    }
+
+    // Sends what's typed: right away if PAM is asking for it, or once it does. Since Plasma 6.8, PAM
+    // runs in a worker that takes a moment to start, and asking before then does nothing, so this asks
+    // again.
+    function submit() {
+        if (password.text.length === 0 || root.waiting) {
+            return;
+        }
+        root.notification = "";
+        if (authenticator.promptForSecret) {
+            authenticator.respond(password.text);
+        } else {
+            root.pending = password.text;
+            authenticator.startAuthenticating();
+        }
+    }
+
+    // Asks until PAM is there to ask for the password, so that it's ready before anything's typed.
+    Timer {
+        interval: 300
+        repeat: true
+        running: !authenticator.promptForSecret && !root.waiting && !root.unlockedWithoutPassword
+        onTriggered: authenticator.startAuthenticating()
     }
     onClearPassword: password.text = ""
 
@@ -263,12 +297,7 @@ Item {
                 // Nothing else here takes typing, so wherever it's typed it comes here.
                 onActiveFocusChanged: if (!activeFocus && !root.unlockedWithoutPassword) forceActiveFocus()
                 Keys.onEscapePressed: text = ""
-                onAccepted: {
-                    if (text.length > 0) {
-                        root.notification = "";
-                        authenticator.respond(text);
-                    }
-                }
+                onAccepted: root.submit()
 
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
