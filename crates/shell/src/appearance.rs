@@ -249,10 +249,18 @@ impl Palette {
             .into();
         // Colors for terminals, which have to stay recognizably red or green, nudged toward the seed
         // so that they belong with it.
+        // They keep their own hue, so a warning still reads as yellow, but softened to the
+        // pastels of a palette made from a wallpaper: at full strength, green and cyan stood out
+        // against it.
         let ansi = |rgb: u32, tone: f64| -> Rgb {
             let design = Rgb::new((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8);
             let toned: Hct = harmonize(design, source).into();
-            Hct::from(toned.get_hue(), toned.get_chroma(), tone).into()
+            Hct::from(
+                toned.get_hue(),
+                toned.get_chroma().min(TERMINAL_CHROMA),
+                tone,
+            )
+            .into()
         };
         // Text on a container color. The content scheme only gives it the least contrast that's
         // readable, which is tiring in a terminal's selection: this keeps its hue, and the way it
@@ -527,7 +535,10 @@ fn read_state(line: &str) -> (bool, bool, Option<String>) {
 
 /// Goes up when the palette's roles come out differently for the same seed, so the files made
 /// from it are written again.
-const PALETTE_VERSION: u32 = 2;
+const PALETTE_VERSION: u32 = 3;
+
+/// The most colorful a terminal's colors get.
+const TERMINAL_CHROMA: f64 = 36.0;
 
 /// Changes when a template does, built in or the user's, or the palette, which means files have to
 /// be written again.
