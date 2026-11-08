@@ -1304,34 +1304,38 @@ impl Shell {
             Message::PointerMoved(id, _) | Message::PointerEntered(id)
                 if self.is_full_screen_bar(id) =>
             {
-                if let Some(open) = &mut self.full_screen {
-                    open.pointer_on(id);
-                    if id == open.trigger && !open.is_shown() {
-                        log::debug!("the pointer's at the top: down come the bars");
-                        open.show();
-                    }
-                }
+                self.full_screen_pointer_on(id);
             }
-            Message::PointerLeft(id) if self.is_full_screen_bar(id) => {
-                if let Some(open) = &mut self.full_screen {
-                    open.pointer_off(id);
-                    if !open.is_hovered() {
-                        return full_screen_check_later();
-                    }
-                }
+            // The dock's own pointer handling goes on as well, below.
+            Message::PointerEntered(id) if id == self.dock_id && self.full_screen.is_some() => {
+                self.full_screen_pointer_on(id);
+            }
+            Message::PointerLeft(id)
+                if self.is_full_screen_bar(id)
+                    || (id == self.dock_id && self.full_screen.is_some()) =>
+            {
+                return self.full_screen_pointer_off(id);
             }
             Message::PointerLeft(_) | Message::PointerEntered(_) => {}
             Message::FullScreenCheck => {
-                if let Some(open) = &mut self.full_screen
-                    && open.is_shown()
-                    && !open.is_hovered()
-                {
-                    // Not while one of the bar's menus is open, which the pointer's on instead.
-                    if self.popup.is_some() {
-                        return full_screen_check_later();
+                // A menu, or the fan out of a folder in the dock, which the pointer's on instead.
+                let menu_open = self.popup.is_some() || self.fan.is_some();
+                if let Some(open) = &mut self.full_screen {
+                    let mut later = false;
+                    for reveal in [&mut open.top, &mut open.bottom] {
+                        if reveal.is_shown() && !reveal.is_hovered() {
+                            if menu_open {
+                                later = true;
+                            } else if reveal.should_hide() {
+                                reveal.hide();
+                            }
+                        }
                     }
-                    if open.should_hide() {
-                        open.hide();
+                    if !open.top.is_shown() {
+                        open.lights_hovered = false;
+                    }
+                    if later {
+                        return full_screen_check_later();
                     }
                 }
             }
@@ -1352,6 +1356,7 @@ impl Shell {
                 }
             }
             Message::PointerMoved(id, point) if id == self.dock_id => {
+                self.full_screen_pointer_on(id);
                 self.dock_cursor = point;
                 if let Some(drag) = &mut self.dock_drag {
                     drag.pointer = point;
@@ -3072,16 +3077,53 @@ impl Shell {
             })
     }
 
-    /// Whether this is one of the surfaces that bring the menu bar down over a full-screen window,
-    /// or the menu bar itself while it does.
+    /// Whether this is one of the strips that bring the bars over a full-screen window, or the menu
+    /// bar while it does. The dock is followed along with its own pointer handling.
     fn is_full_screen_bar(&self, id: IcedId) -> bool {
-        self.full_screen
-            .as_ref()
-            .is_some_and(|open| id == open.trigger || id == self.menubar_id)
+        self.full_screen.as_ref().is_some_and(|open| {
+            id == open.top.trigger || id == open.bottom.trigger || id == self.menubar_id
+        })
     }
 
-    /// Puts the menu bar over the focused window while it's full screen, out of sight until the
-    /// pointer touches the top, and back where it was after.
+    /// Which bar over a full-screen window this surface is, or brings.
+    fn full_screen_reveal(&mut self, id: IcedId) -> Option<&mut full_screen::Reveal> {
+        let (menubar, dock) = (self.menubar_id, self.dock_id);
+        let open = self.full_screen.as_mut()?;
+        if id == open.top.trigger || id == menubar {
+            Some(&mut open.top)
+        } else if id == open.bottom.trigger || id == dock {
+            Some(&mut open.bottom)
+        } else {
+            None
+        }
+    }
+
+    /// The pointer's on a bar over a full-screen window, or at the edge that brings it.
+    fn full_screen_pointer_on(&mut self, id: IcedId) {
+        let Some(reveal) = self.full_screen_reveal(id) else {
+            return;
+        };
+        reveal.pointer_on(id);
+        if id == reveal.trigger && !reveal.is_shown() {
+            log::debug!("the pointer's at the edge: in comes the bar");
+            reveal.show();
+        }
+    }
+
+    fn full_screen_pointer_off(&mut self, id: IcedId) -> Task<Message> {
+        let Some(reveal) = self.full_screen_reveal(id) else {
+            return Task::none();
+        };
+        reveal.pointer_off(id);
+        if reveal.is_hovered() {
+            Task::none()
+        } else {
+            full_screen_check_later()
+        }
+    }
+
+    /// Puts the menu bar and the dock over the focused window while it's full screen, out of sight
+    /// until the pointer touches the top or the bottom, and back where they were after.
     fn follow_full_screen(&mut self) -> Task<Message> {
         let window = self
             .windows
@@ -3094,12 +3136,15 @@ impl Shell {
                 Task::none()
             }
             (Some(window), None) => {
-                log::debug!("window {window} is full screen; the menu bar waits at the top");
-                let (trigger, open_trigger) =
-                    Message::layershell_open(full_screen::trigger_settings());
-                self.surfaces.insert(trigger, Surface::FullScreenTrigger);
-                let open = full_screen::FullScreen::new(window, trigger);
-                let offset = open.offset();
+                log::debug!("window {window} is full screen; the menu bar and the dock wait");
+                let (top, open_top) = Message::layershell_open(full_screen::trigger_settings(true));
+                let (bottom, open_bottom) =
+                    Message::layershell_open(full_screen::trigger_settings(false));
+                self.surfaces.insert(top, Surface::FullScreenTrigger);
+                self.surfaces.insert(bottom, Surface::FullScreenTrigger);
+                let open = full_screen::FullScreen::new(window, top, bottom);
+                let menubar_offset = open.menubar_offset();
+                let dock_offset = open.bottom.offset(dock_hidden_height());
                 self.full_screen = Some(open);
                 self.set_menubar_shapes();
                 Task::batch([
@@ -3109,19 +3154,29 @@ impl Shell {
                     }),
                     Task::done(Message::MarginChange {
                         id: self.menubar_id,
-                        margin: (offset, 0, 0, 0),
+                        margin: (menubar_offset, 0, 0, 0),
                     }),
-                    open_trigger,
+                    Task::done(Message::LayerChange {
+                        id: self.dock_id,
+                        layer: Layer::Overlay,
+                    }),
+                    Task::done(Message::MarginChange {
+                        id: self.dock_id,
+                        margin: (0, 0, dock_offset, 0),
+                    }),
+                    open_top,
+                    open_bottom,
                 ])
             }
             (None, Some(_)) => {
-                log::debug!("no focused window is full screen; the menu bar's back");
+                log::debug!("no focused window is full screen; the menu bar and the dock are back");
                 let Some(open) = self.full_screen.take() else {
                     return Task::none();
                 };
                 self.set_menubar_shapes();
                 Task::batch([
-                    Task::done(Message::RemoveWindow(open.trigger)),
+                    Task::done(Message::RemoveWindow(open.top.trigger)),
+                    Task::done(Message::RemoveWindow(open.bottom.trigger)),
                     Task::done(Message::LayerChange {
                         id: self.menubar_id,
                         layer: Layer::Top,
@@ -3130,32 +3185,52 @@ impl Shell {
                         id: self.menubar_id,
                         margin: (0, 0, 0, 0),
                     }),
+                    Task::done(Message::LayerChange {
+                        id: self.dock_id,
+                        layer: Layer::Top,
+                    }),
+                    Task::done(Message::MarginChange {
+                        id: self.dock_id,
+                        margin: (0, 0, 0, 0),
+                    }),
                 ])
             }
             (None, None) => Task::none(),
         }
     }
 
-    /// Moves the menu bar to where it is on its way down or up.
+    /// Moves the menu bar and the dock to where they are on their way in or out.
     fn place_full_screen_bars(&mut self) -> Task<Message> {
-        let menubar_id = self.menubar_id;
+        let (menubar_id, dock_id) = (self.menubar_id, self.dock_id);
         let Some(open) = &mut self.full_screen else {
             return Task::none();
         };
-        // Moving the bar doesn't draw it, and frames only come at the display's pace from drawing:
-        // without this, they'd come from the fallback timer, at about 30 a second.
-        if open.is_moving() {
-            iced_layershell::redraw::mark_changed(menubar_id);
+        let mut tasks = Vec::new();
+        let bars = [
+            (&mut open.top, menubar_id, menubar::HEIGHT as f32, true),
+            (&mut open.bottom, dock_id, dock_hidden_height(), false),
+        ];
+        for (reveal, id, hidden, top) in bars {
+            // Moving a bar doesn't draw it, and frames only come at the display's pace from
+            // drawing: without this, they'd come from the fallback timer, at about 30 a second.
+            if reveal.is_moving() {
+                iced_layershell::redraw::mark_changed(id);
+            }
+            let offset = reveal.offset(hidden);
+            if reveal.placed == Some(offset) {
+                continue;
+            }
+            reveal.placed = Some(offset);
+            tasks.push(Task::done(Message::MarginChange {
+                id,
+                margin: if top {
+                    (offset, 0, 0, 0)
+                } else {
+                    (0, 0, offset, 0)
+                },
+            }));
         }
-        let offset = open.offset();
-        if open.placed == Some(offset) {
-            return Task::none();
-        }
-        open.placed = Some(offset);
-        Task::done(Message::MarginChange {
-            id: menubar_id,
-            margin: (offset, 0, 0, 0),
-        })
+        Task::batch(tasks)
     }
 
     /// The menu bar's glass: none, normally, so the wallpaper shows; frosted over a full-screen
@@ -5070,6 +5145,12 @@ impl Shell {
 }
 
 /// Looks again a little after the pointer's left the bars over a full-screen window.
+/// How far below the screen the dock goes over a full-screen window: the pill, the gap under it,
+/// and room for its shadow.
+fn dock_hidden_height() -> f32 {
+    dock::reserved_height() + 24.0
+}
+
 fn full_screen_check_later() -> Task<Message> {
     Task::future(async {
         tokio::time::sleep(full_screen::HIDE_AFTER + Duration::from_millis(20)).await;

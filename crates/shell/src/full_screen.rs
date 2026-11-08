@@ -1,6 +1,7 @@
-//! What the top of the screen does while the focused window is full screen, as on macOS: the menu
-//! bar is out of the way until the pointer touches the top, and then slides down with the window's
-//! traffic lights in it, after the logo, which close the window or take it out of full screen.
+//! What the edges of the screen do while the focused window is full screen, as on macOS: the menu
+//! bar and the dock are out of the way until the pointer touches the top or the bottom. Then the
+//! menu bar slides down with the window's traffic lights in it, after the logo, which close the
+//! window or take it out of full screen, and the dock slides up.
 
 use std::time::{Duration, Instant};
 
@@ -15,12 +16,12 @@ use crate::app::{Element, Message};
 use crate::icons::{self, Glyph};
 use crate::menubar;
 
-/// The strip along the top that the pointer touches to bring the bar down: as little of the window
-/// as still catches a pointer pushed against the top.
+/// The strip along the edge that the pointer touches to bring a bar: as little of the window as
+/// still catches a pointer pushed against the edge.
 const TRIGGER_HEIGHT: u32 = 2;
-/// How long after the pointer leaves the bar it goes back up.
+/// How long after the pointer leaves a bar it goes again.
 pub const HIDE_AFTER: Duration = Duration::from_millis(400);
-/// Down, and back up, without overshooting: past the top there'd be a gap above the bar.
+/// In, and back out, without overshooting: past the edge there'd be a gap beside the bar.
 const SPRING: Spring = Spring::new(0.28, 1.0);
 
 const LIGHT_SIZE: f32 = 12.0;
@@ -30,32 +31,59 @@ const LIGHTS_GAP: f32 = 12.0;
 /// How much room the lights take in the menu bar, between the logo and the app's name.
 pub const LIGHTS_WIDTH: f32 = 3.0 * LIGHT_SIZE + 2.0 * LIGHT_SPACING + LIGHTS_GAP;
 
-/// The full-screen window, and the menu bar that comes down over it.
+/// The full-screen window, and the bars that come over it: the menu bar from the top, the dock
+/// from the bottom.
 pub struct FullScreen {
     /// The window, by the shell's id for it.
     pub window: u64,
-    pub trigger: IcedId,
-    /// 0 out of sight, 1 all the way down.
-    pub shown: Motion,
-    /// Which of the menu bar and the strip along the top the pointer's on. Going from one to the
-    /// other, the shell can hear it arrive before it hears it leave.
-    on: Vec<IcedId>,
-    /// When the pointer last left the bar, to put it away a little after.
-    pub left_at: Option<Instant>,
+    pub top: Reveal,
+    pub bottom: Reveal,
     pub lights_hovered: bool,
-    /// How far down the bar was last put, in whole pixels, to only move it when that changes.
-    pub placed: Option<i32>,
 }
 
 impl FullScreen {
-    pub fn new(window: u64, trigger: IcedId) -> Self {
+    pub fn new(window: u64, top_trigger: IcedId, bottom_trigger: IcedId) -> Self {
         Self {
             window,
+            top: Reveal::new(top_trigger),
+            bottom: Reveal::new(bottom_trigger),
+            lights_hovered: false,
+        }
+    }
+
+    pub fn is_moving(&self) -> bool {
+        self.top.is_moving() || self.bottom.is_moving()
+    }
+
+    /// Where the menu bar's top is: above the screen, by as much as is out of sight.
+    pub fn menubar_offset(&self) -> i32 {
+        self.top.offset(menubar::HEIGHT as f32)
+    }
+}
+
+/// One of the bars, out of sight over the full-screen window until the pointer touches its edge of
+/// the screen, and going again a moment after the pointer leaves it.
+pub struct Reveal {
+    /// The strip along the edge that the pointer touches to bring the bar.
+    pub trigger: IcedId,
+    /// 0 out of sight, 1 all the way in.
+    pub shown: Motion,
+    /// Which of the bar and the strip the pointer's on. Going from one to the other, the shell can
+    /// hear it arrive before it hears it leave.
+    on: Vec<IcedId>,
+    /// When the pointer last left the bar, to put it away a little after.
+    pub left_at: Option<Instant>,
+    /// How far in the bar was last put, in whole pixels, to only move it when that changes.
+    pub placed: Option<i32>,
+}
+
+impl Reveal {
+    fn new(trigger: IcedId) -> Self {
+        Self {
             trigger,
             shown: Motion::at(0.0, SPRING, 0.002),
             on: Vec::new(),
             left_at: None,
-            lights_hovered: false,
             placed: None,
         }
     }
@@ -84,7 +112,7 @@ impl FullScreen {
         self.shown.is_moving()
     }
 
-    /// Whether it's down, or on the way.
+    /// Whether it's in, or on the way.
     pub fn is_shown(&self) -> bool {
         self.shown.target() > 0.5
     }
@@ -96,25 +124,24 @@ impl FullScreen {
 
     pub fn hide(&mut self) {
         self.shown.go_to(0.0);
-        self.lights_hovered = false;
     }
 
-    /// Where the menu bar's top is: above the screen, by as much as is out of sight.
-    pub fn offset(&self) -> i32 {
-        let hidden = menubar::HEIGHT as f32;
+    /// How far past the edge of the screen the bar is, as a margin: as much of `hidden` as is out of
+    /// sight.
+    pub fn offset(&self, hidden: f32) -> i32 {
         -((1.0 - self.shown.value().clamp(0.0, 1.0)) * hidden).round() as i32
     }
 
-    /// Whether it's time it went back up.
+    /// Whether it's time it went again.
     pub fn should_hide(&self) -> bool {
         !self.is_hovered() && self.left_at.is_some_and(|at| at.elapsed() >= HIDE_AFTER)
     }
 }
 
-/// The strip along the top of the screen, which only feels for the pointer.
-pub fn trigger_settings() -> NewLayerShellSettings {
+/// The strip along the top or the bottom of the screen, which only feels for the pointer.
+pub fn trigger_settings(top: bool) -> NewLayerShellSettings {
     NewLayerShellSettings {
-        anchor: Anchor::Top | Anchor::Left | Anchor::Right,
+        anchor: if top { Anchor::Top } else { Anchor::Bottom } | Anchor::Left | Anchor::Right,
         layer: Layer::Overlay,
         size: Some((0, TRIGGER_HEIGHT)),
         exclusive_zone: Some(-1),
