@@ -22,7 +22,7 @@
 
 stdenv.mkDerivation {
   pname = "kwin-makshell";
-  version = "0.1.5";
+  version = "0.1.6";
 
   # The plugin reads the protocol XML from the repository root.
   src = lib.fileset.toSource {
