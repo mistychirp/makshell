@@ -171,12 +171,17 @@ pub fn settings() -> NewLayerShellSettings {
     }
 }
 
-pub fn material_shapes(width: f32) -> Vec<Shape> {
+/// No background, like macOS's menu bar, whose text adapts to the wallpaper instead; frosted
+/// when it's over a full-screen window.
+pub fn material_shapes(width: f32, frosted: bool) -> Vec<Shape> {
     vec![Shape {
         rect: (0, 0, width.ceil() as i32, HEIGHT as i32),
         radius: 0,
-        // No background, like macOS's menu bar; the text adapts to the wallpaper instead.
-        style: material::Style::Transparent,
+        style: if frosted {
+            material::Style::Frosted
+        } else {
+            material::Style::Transparent
+        },
     }]
 }
 

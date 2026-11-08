@@ -44,6 +44,7 @@ pub struct WindowInfo {
     /// What KWin's own interfaces know it by.
     pub uuid: String,
     pub is_minimized: bool,
+    pub is_full_screen: bool,
     /// The process it belongs to, once KWin has said.
     pub pid: Option<u32>,
 }
@@ -77,6 +78,13 @@ pub fn focus_window(id: u64) {
 pub fn minimize_window(id: u64) {
     with_window(id, |window| {
         window.set_state(STATE_MINIMIZED, STATE_MINIMIZED);
+    });
+}
+
+/// Takes the window out of full screen.
+pub fn leave_full_screen(id: u64) {
+    with_window(id, |window| {
+        window.set_state(STATE_FULL_SCREEN, 0);
     });
 }
 
@@ -299,6 +307,7 @@ pub async fn switch_layout(index: usize) {
 // Window state flags (`org_kde_plasma_window_management.state`).
 const STATE_ACTIVE: u32 = 0x1;
 const STATE_MINIMIZED: u32 = 0x2;
+const STATE_FULL_SCREEN: u32 = 0x8;
 const STATE_DEMANDS_ATTENTION: u32 = 0x80;
 const STATE_SKIP_TASKBAR: u32 = 0x1000;
 
@@ -411,6 +420,7 @@ impl Tracker {
                 menu: w.menu.clone(),
                 uuid: w.uuid.clone(),
                 is_minimized: w.state & STATE_MINIMIZED != 0,
+                is_full_screen: w.state & STATE_FULL_SCREEN != 0,
                 pid: w.pid,
             })
             .collect();

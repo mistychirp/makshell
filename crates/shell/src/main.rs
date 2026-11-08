@@ -20,6 +20,7 @@ mod dnd;
 mod dock;
 mod fan;
 mod fonts;
+mod full_screen;
 mod glass_protocol;
 mod group;
 mod hud;

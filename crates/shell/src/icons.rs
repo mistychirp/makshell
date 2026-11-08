@@ -26,6 +26,8 @@ pub enum Glyph {
     Previous,
     Next,
     Close,
+    /// Two triangles pointing in to the middle, on the green light of a full-screen window.
+    ExitFullScreen,
     /// Half a circle, for sleep.
     Sleep,
     Restart,
@@ -391,6 +393,11 @@ impl Glyph {
             Glyph::Close => {
                 r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.6" stroke-linecap="round">
                 <path d="M4 4l16 16M20 4L4 20"/>
+                </svg>"##
+            }
+            Glyph::ExitFullScreen => {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#000">
+                <path d="M11 3v8H3z M13 21v-8h8z"/>
                 </svg>"##
             }
             Glyph::Next => {
