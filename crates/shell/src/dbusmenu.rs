@@ -91,8 +91,8 @@ impl Address {
 
     /// The entries for these items, which tell the app when they're chosen.
     pub fn entries(&self, items: &[Item]) -> Vec<menu::Entry> {
-        items
-            .iter()
+        tidy_separators(items)
+            .into_iter()
             .map(|item| {
                 if item.separator {
                     return menu::Entry::Separator;
@@ -218,6 +218,22 @@ fn parse_children(children: &[&Value<'_>]) -> Vec<Item> {
         .collect()
 }
 
+/// The items as a menu shows them, the way Qt's do: a separator only between two items, so none
+/// at either end and never two in a row, which hidden items between separators would leave.
+fn tidy_separators(items: &[Item]) -> Vec<&Item> {
+    let mut shown: Vec<&Item> = Vec::with_capacity(items.len());
+    for item in items {
+        if item.separator && shown.last().is_none_or(|last| last.separator) {
+            continue;
+        }
+        shown.push(item);
+    }
+    if shown.last().is_some_and(|last| last.separator) {
+        shown.pop();
+    }
+    shown
+}
+
 /// A label without its mnemonic: `_Quit` is "Quit", and `__` is a literal underscore.
 fn plain_label(label: &str) -> String {
     let mut plain = String::with_capacity(label.len());
@@ -267,4 +283,45 @@ fn parse_shortcut(value: &Value<'_>) -> Option<String> {
         });
     }
     (!shortcut.is_empty()).then_some(shortcut)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Item, tidy_separators};
+
+    fn item(id: i32, separator: bool) -> Item {
+        Item {
+            id,
+            label: String::new(),
+            enabled: true,
+            separator,
+            checked: false,
+            shortcut: None,
+            icon_name: String::new(),
+            icon: None,
+            opens_submenu: false,
+            children: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn separators_only_go_between_items() {
+        // Like Dolphin's Edit menu with its hidden items gone: a run of separators, and one at
+        // either end.
+        let items = [
+            item(0, true),
+            item(1, false),
+            item(2, true),
+            item(3, true),
+            item(4, true),
+            item(5, false),
+            item(6, true),
+        ];
+        let ids: Vec<(i32, bool)> = tidy_separators(&items)
+            .iter()
+            .map(|item| (item.id, item.separator))
+            .collect();
+        assert_eq!(ids, [(1, false), (2, true), (5, false)]);
+        assert!(tidy_separators(&[item(0, true)]).is_empty());
+    }
 }
