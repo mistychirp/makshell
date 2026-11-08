@@ -13,6 +13,7 @@ pub struct Config {
     pub dock: DockConfig,
     pub menubar: MenuBarConfig,
     pub notifications: NotificationsConfig,
+    pub clipboard: ClipboardConfig,
     /// Desktop entry id of the app that opens folders and the trash. Defaults to the system's
     /// default app for folders.
     pub file_manager: Option<String>,
@@ -77,6 +78,19 @@ impl Default for DockConfig {
             magnification: true,
             magnified_size: 80.0,
         }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct ClipboardConfig {
+    /// How many copied things the history keeps.
+    pub max_items: usize,
+}
+
+impl Default for ClipboardConfig {
+    fn default() -> Self {
+        Self { max_items: 50 }
     }
 }
 
@@ -175,6 +189,11 @@ pub fn save_appearance_mode(mode: &str) -> io::Result<()> {
 /// Rewrites `[appearance] match_apps`, the same way.
 pub fn save_match_apps(on: bool) -> io::Result<()> {
     save("appearance", "match_apps", toml_edit::value(on))
+}
+
+/// Rewrites `[clipboard] max_items`, the same way.
+pub fn save_clipboard_max(max_items: usize) -> io::Result<()> {
+    save("clipboard", "max_items", toml_edit::value(max_items as i64))
 }
 
 /// Rewrites `[appearance] macos_icons`, the same way.

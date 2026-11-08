@@ -94,6 +94,8 @@ pub enum Event {
     Left,
     /// The Settings app changed the config file.
     ConfigChanged,
+    /// The Settings app asked for the clipboard's history to be forgotten.
+    ClearClipboard,
     /// Spotlight's shortcut was pressed.
     ToggleSpotlight,
     /// A volume or brightness key was pressed, by its name in KDE's shortcuts.
@@ -145,6 +147,12 @@ impl Windows {
     #[zbus(name = "ConfigChanged")]
     fn config_changed(&self) {
         let _ = self.events.unbounded_send(Event::ConfigChanged);
+    }
+
+    /// The Settings app asked for the clipboard's history to be forgotten.
+    #[zbus(name = "ClearClipboard")]
+    fn clear_clipboard(&self) {
+        let _ = self.events.unbounded_send(Event::ClearClipboard);
     }
 }
 

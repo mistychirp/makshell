@@ -139,6 +139,7 @@ pub enum Page {
     Desktop,
     Notifications,
     Windows,
+    Spotlight,
     About,
 }
 
@@ -155,6 +156,7 @@ impl Page {
             Page::Desktop => "Desktop & Dock",
             Page::Notifications => "Notifications",
             Page::Windows => "Windows",
+            Page::Spotlight => "Spotlight",
             Page::About => "About",
         }
     }
@@ -191,6 +193,8 @@ pub enum Message {
     AccentTyped(String),
     MatchAppsToggled(bool),
     MacosIconsToggled(bool),
+    ClipboardMaxChosen(usize),
+    ClipboardCleared,
     WallpaperColorsRead(Vec<[u8; 3]>),
     /// Opens one of KDE's settings modules, for what we don't do ourselves yet.
     OpenSystemPage(&'static str),
@@ -275,6 +279,9 @@ async fn set_exception(app: String, excepted: bool) -> Vec<String> {
 trait Shell {
     #[zbus(name = "ConfigChanged")]
     fn config_changed(&self) -> zbus::Result<()>;
+
+    #[zbus(name = "ClearClipboard")]
+    fn clear_clipboard(&self) -> zbus::Result<()>;
 }
 
 async fn read_glass() -> Option<HashMap<&'static str, f32>> {
@@ -415,6 +422,18 @@ async fn read_wallpaper_colors(configured: Option<String>) -> Vec<[u8; 3]> {
 }
 
 /// Tells the shell to read the config file again. It's fine if it isn't running.
+/// Asks the shell to forget what's been copied.
+async fn clear_clipboard() {
+    let result = async {
+        let connection = dbus::session().await.ok_or(zbus::Error::Unsupported)?;
+        ShellProxy::new(&connection).await?.clear_clipboard().await
+    }
+    .await;
+    if let Err(err) = result {
+        log::debug!("can't clear the clipboard's history: {err}");
+    }
+}
+
 async fn tell_shell() {
     let result = async {
         let connection = dbus::session().await.ok_or(zbus::Error::Unsupported)?;
@@ -498,6 +517,10 @@ struct SettingsApp {
     wallpaper_colors: Vec<[u8; 3]>,
     match_apps: bool,
     macos_icons: bool,
+    /// How many copied things the clipboard's history keeps.
+    clipboard_max: usize,
+    /// The history was just cleared, which the button says.
+    clipboard_cleared: bool,
     /// A few colors of the palette apps would get.
     palette_preview: Vec<[u8; 3]>,
     /// The apps whose notifications are off, as their keys and names.
@@ -672,6 +695,8 @@ impl SettingsApp {
             wallpaper_colors: Vec::new(),
             match_apps: config.appearance.match_apps,
             macos_icons: config.appearance.macos_icons,
+            clipboard_max: config.clipboard.max_items,
+            clipboard_cleared: false,
             palette_preview: Vec::new(),
             notifications_off: notifications_off(),
             exceptions: Vec::new(),
@@ -897,6 +922,17 @@ impl SettingsApp {
                 }
                 return Task::future(tell_shell()).discard();
             }
+            Message::ClipboardMaxChosen(max) => {
+                self.clipboard_max = max;
+                if let Err(err) = config::save_clipboard_max(max) {
+                    log::warn!("can't save how much the clipboard's history keeps: {err}");
+                }
+                return Task::future(tell_shell()).discard();
+            }
+            Message::ClipboardCleared => {
+                self.clipboard_cleared = true;
+                return Task::future(clear_clipboard()).discard();
+            }
             Message::MacosIconsToggled(on) => {
                 self.macos_icons = on;
                 if let Err(err) = config::save_macos_icons(on) {
@@ -972,6 +1008,7 @@ impl SettingsApp {
                     self.accent = config.appearance.accent;
                     self.match_apps = config.appearance.match_apps;
                     self.macos_icons = config.appearance.macos_icons;
+                    self.clipboard_max = config.clipboard.max_items;
                     self.show_accent();
                     return Task::batch([
                         Task::perform(read_glass(), Message::GlassRead),
@@ -1028,6 +1065,7 @@ impl SettingsApp {
                     rgb(232, 74, 74)
                 ),
                 sidebar_item(Page::Windows, self.page, Glyph::Window, rgb(112, 112, 122)),
+                sidebar_item(Page::Spotlight, self.page, Glyph::Search, rgb(98, 98, 108)),
                 Space::new().height(12),
                 text("System").size(CAPTION_SIZE).color(DIM),
                 Space::new().height(4),
@@ -1076,6 +1114,7 @@ impl SettingsApp {
             Page::Desktop => self.desktop_page(),
             Page::Notifications => self.notifications_page(),
             Page::Windows => self.windows_page(),
+            Page::Spotlight => self.spotlight_page(),
             Page::About => self.about_page(),
         };
         let content = column![
@@ -1425,6 +1464,34 @@ impl SettingsApp {
         column![section("Turned Off", card(rows)), caption(explained)]
             .spacing(6)
             .into()
+    }
+
+    fn spotlight_page(&self) -> Element<'_> {
+        let keep = row(CLIPBOARD_SIZES.map(|size| {
+            segment(
+                size.to_string(),
+                self.clipboard_max == size,
+                Message::ClipboardMaxChosen(size),
+            )
+        }))
+        .spacing(2);
+        let clear = if self.clipboard_cleared {
+            text("Cleared").size(TEXT_SIZE).color(DIM).into()
+        } else {
+            capsule_button("Clear", Message::ClipboardCleared)
+        };
+        column![
+            section(
+                "Clipboard History",
+                card(vec![
+                    setting_row("Items", keep.into()),
+                    setting_row("History", clear),
+                ]),
+            ),
+            caption("Copied passwords aren't kept."),
+        ]
+        .spacing(6)
+        .into()
     }
 
     fn windows_page(&self) -> Element<'_> {
@@ -1996,6 +2063,33 @@ fn settings_toggle<'a>(value: bool, on_toggle: impl Fn(bool) -> Message + 'a) ->
             text_color: None,
             border_radius: None,
             padding_ratio: 0.1,
+        })
+        .into()
+}
+
+/// The choices for how much the clipboard's history keeps.
+const CLIPBOARD_SIZES: [usize; 4] = [25, 50, 100, 200];
+
+/// One of a row of choices, like Light, Dark and Auto.
+fn segment<'a>(label: String, selected: bool, press: Message) -> Element<'a> {
+    button(text(label).size(TEXT_SIZE))
+        .padding([4, 12])
+        .on_press(press)
+        .style(move |_, status| {
+            let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+            button::Style {
+                background: Some(Background::Color(if selected {
+                    appearance::accent()
+                } else {
+                    Color::from_rgba(1.0, 1.0, 1.0, if hovered { 0.22 } else { 0.1 })
+                })),
+                text_color: Color::WHITE,
+                border: Border {
+                    radius: 13.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
         })
         .into()
 }

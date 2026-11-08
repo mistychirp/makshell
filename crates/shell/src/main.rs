@@ -10,6 +10,7 @@ mod autostart;
 mod banners;
 mod bluetooth;
 mod brightness;
+mod clip_store;
 mod clipboard;
 mod config;
 mod control;

@@ -35,9 +35,10 @@ use crate::material::{self, Material, MaterialSurface};
 use crate::notifications::{self, Notification};
 use crate::places::{self, Place};
 use crate::{
-    appearance, appmenu, arrange, audio, autostart, bluetooth, brightness, clipboard, control,
-    dbusmenu, desktop, dnd, dock, fan, fonts, full_screen, hud, icons, launcher, media, menu,
-    menubar, network, notification_center, portal, running, spotlight, tray, wallpaper, widgets,
+    appearance, appmenu, arrange, audio, autostart, bluetooth, brightness, clip_store, clipboard,
+    control, dbusmenu, desktop, dnd, dock, fan, fonts, full_screen, hud, icons, launcher, media,
+    menu, menubar, network, notification_center, portal, running, spotlight, tray, wallpaper,
+    widgets,
 };
 
 pub type Element<'a> = iced_widget::core::Element<'a, Message, Theme, Renderer>;
@@ -532,6 +533,8 @@ struct Shell {
     spotlight_file_icons: spotlight::FileIcons,
     /// What's been copied, newest first.
     clips: std::collections::VecDeque<spotlight::Clip>,
+    /// How many copied things the history keeps.
+    clips_max: usize,
     /// Where the pointer was last over the fan, which a press doesn't say.
     fan_pointer: Point,
     /// What's running of each app, by the id its windows give, or a pinned app's id.
@@ -675,6 +678,16 @@ impl Shell {
         autostart::run_once();
         let config = Config::load();
         let mut apps = AppIndex::load();
+        // What was copied before, which outlasts the session.
+        let clips = clip_store::load()
+            .into_iter()
+            .take(config.clipboard.max_items)
+            .map(|kept| spotlight::Clip {
+                content: kept.content,
+                copied: kept.copied,
+                source: kept.source.map(|id| apps.resolve(&id)),
+            })
+            .collect();
         let recents = dock::load_recents();
         let dock = dock::items(
             &config.dock.pinned,
@@ -790,7 +803,8 @@ impl Shell {
             spotlight_apps: Vec::new(),
             spotlight_unread,
             spotlight_file_icons: spotlight::FileIcons::default(),
-            clips: std::collections::VecDeque::new(),
+            clips,
+            clips_max: config.clipboard.max_items,
             started: Instant::now(),
             popup: None,
             next_bar_menu: None,
@@ -1780,6 +1794,10 @@ impl Shell {
                 return close;
             }
             Message::Arrange(arrange::Event::ConfigChanged) => return self.reload_config(),
+            Message::Arrange(arrange::Event::ClearClipboard) => {
+                self.clips.clear();
+                self.keep_clips();
+            }
             Message::Arrange(arrange::Event::MediaKey(key)) => return self.media_key(&key),
             Message::BrightnessStep(level, step) => {
                 self.control.brightness = level;
@@ -1981,7 +1999,9 @@ impl Shell {
                         copied: chrono::Local::now(),
                         source: self.focused_app.clone(),
                     },
+                    self.clips_max,
                 );
+                self.keep_clips();
             }
             Message::SurfaceOpened(id, size)
                 if self.surfaces.get(&id) == Some(&Surface::Wallpaper) =>
@@ -3973,7 +3993,8 @@ impl Shell {
                 if let Some(clip) = self.clips.get(clip) {
                     clipboard::copy(&clip.content);
                     let clip = clip.clone();
-                    spotlight::remember_clip(&mut self.clips, clip);
+                    spotlight::remember_clip(&mut self.clips, clip, self.clips_max);
+                    self.keep_clips();
                 }
                 Task::none()
             }
@@ -4034,9 +4055,30 @@ impl Shell {
         open
     }
 
+    /// Writes the clipboard's history down, so it outlasts the session.
+    fn keep_clips(&self) {
+        clip_store::save(
+            self.clips
+                .iter()
+                .map(|clip| clip_store::Kept {
+                    content: clip.content.clone(),
+                    copied: clip.copied,
+                    source: clip.source.as_ref().map(|app| app.id.clone()),
+                })
+                .collect(),
+        );
+    }
+
     /// Takes in what the Settings app just wrote to the config file.
     fn reload_config(&mut self) -> Task<Message> {
         let config = Config::load();
+        if config.clipboard.max_items != self.clips_max {
+            self.clips_max = config.clipboard.max_items;
+            if self.clips.len() > self.clips_max {
+                self.clips.truncate(self.clips_max);
+                self.keep_clips();
+            }
+        }
         self.always_glassy_widgets = config.desktop.always_glassy_widgets;
         self.notifications_off.clone_from(&config.notifications.off);
         self.appearance_auto = config.appearance.mode == "auto";

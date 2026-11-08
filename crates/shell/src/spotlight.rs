@@ -52,7 +52,6 @@ const CAPTION_SIZE: f32 = 11.0;
 /// that.
 const TOP: f32 = 0.2333;
 const FIELD_DROP: f32 = 4.0;
-const MAX_CLIPS: usize = 50;
 const FIELD_PADDING: f32 = 16.0;
 // All measured from a recording of Tahoe's, frame by frame, in seconds.
 /// How the field grows into the panel and back: its height first, and its width a little after, which
@@ -1123,11 +1122,12 @@ fn short_path(path: &Path) -> String {
     }
 }
 
-/// Adds what was just copied to the top, moving it there if it's already in the history.
-pub fn remember_clip(clips: &mut VecDeque<Clip>, clip: Clip) {
+/// Adds what was just copied to the top, moving it there if it's already in the history, which
+/// keeps no more than `max` things.
+pub fn remember_clip(clips: &mut VecDeque<Clip>, clip: Clip, max: usize) {
     clips.retain(|known| known.content != clip.content);
     clips.push_front(clip);
-    clips.truncate(MAX_CLIPS);
+    clips.truncate(max);
 }
 
 pub fn settings() -> NewLayerShellSettings {
@@ -1353,11 +1353,15 @@ mod tests {
             source: None,
         };
         let mut clips = VecDeque::new();
-        remember_clip(&mut clips, clip("a"));
-        remember_clip(&mut clips, clip("b"));
-        remember_clip(&mut clips, clip("a"));
+        remember_clip(&mut clips, clip("a"), 50);
+        remember_clip(&mut clips, clip("b"), 50);
+        remember_clip(&mut clips, clip("a"), 50);
         assert_eq!(clips.len(), 2);
         assert_eq!(clips[0].content, Content::Text(String::from("a")));
+        // No more than it's set to keep, the oldest going first.
+        remember_clip(&mut clips, clip("c"), 2);
+        assert_eq!(clips.len(), 2);
+        assert_eq!(clips[1].content, Content::Text(String::from("a")));
     }
 
     #[test]

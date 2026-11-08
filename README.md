@@ -5,7 +5,8 @@ running as its own login session without the rest of Plasma.
 
 - **Dock**, with magnification, recent apps, minimized windows and a Downloads stack that fans out.
 - **Menu bar**, with the focused app's menus, tray icons, and Wi-Fi, Bluetooth and Sound items.
-- **Control Center**, **Notification Center** with grouped notifications, and **Spotlight**.
+- **Control Center**, **Notification Center** with grouped notifications, and **Spotlight**, with a
+  clipboard history that outlasts the session.
 - **Desktop** icons and widgets: calendar, clock, weather and photos.
 - **Liquid glass** behind all of it, rendered by a KWin plugin, and blur behind see-through windows.
 - **Window decorations** with traffic lights, a macOS-style **Alt+Tab** and **lock screen**.
@@ -143,7 +144,13 @@ show_sound = true
 
 [notifications]
 off = ["org.example.noisy"]   # apps whose notifications are turned off
+
+[clipboard]
+max_items = 50           # how many copied things Spotlight's clipboard history keeps
 ```
+
+The clipboard history is kept in `~/.local/state/makshell/clipboard`, which only you can read.
+Anything a password manager marks as secret isn't kept.
 
 To give apps the generated colors that makshell doesn't know about, put templates in
 `~/.config/makshell/templates`. A template's first line names where the result goes, as in

@@ -1,6 +1,6 @@
-//! The clipboard's history, through ext-data-control-v1. It's kept in memory only, and skips what a
-//! password manager marks as secret. It has its own connection and thread, since reading what an app
-//! copied means waiting for that app.
+//! The clipboard's history, through ext-data-control-v1. It skips what a password manager marks as
+//! secret, and `clip_store` keeps the rest across sessions. It has its own connection and thread,
+//! since reading what an app copied means waiting for that app.
 
 use std::collections::HashSet;
 use std::fs::File;
