@@ -18,7 +18,6 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use iced_widget::core::Color;
-use material_colors::blend::harmonize;
 use material_colors::color::Rgb;
 use material_colors::hct::Hct;
 use material_colors::quantize::{Quantizer, QuantizerCelebi};
@@ -247,20 +246,10 @@ impl Palette {
         let s: Scheme = SchemeContent::new(Hct::new(source), dark, None)
             .scheme
             .into();
-        // Colors for terminals, which have to stay recognizably red or green, nudged toward the seed
-        // so that they belong with it.
-        // They keep their own hue, so a warning still reads as yellow, but softened to the
-        // pastels of a palette made from a wallpaper: at full strength, green and cyan stood out
-        // against it.
-        let ansi = |rgb: u32, tone: f64| -> Rgb {
-            let design = Rgb::new((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8);
-            let toned: Hct = harmonize(design, source).into();
-            Hct::from(
-                toned.get_hue(),
-                toned.get_chroma().min(TERMINAL_CHROMA),
-                tone,
-            )
-            .into()
+        // A palette's color at another tone, for terminals.
+        let at_tone = |rgb: Rgb, tone: f64| -> Rgb {
+            let hct: Hct = rgb.into();
+            Hct::from(hct.get_hue(), hct.get_chroma(), tone).into()
         };
         // Text on a container color. The content scheme only gives it the least contrast that's
         // readable, which is tiring in a terminal's selection: this keeps its hue, and the way it
@@ -365,18 +354,27 @@ impl Palette {
                 ("term_bright_white", s.surface_container_low),
             ]);
         }
-        // On a light background, colors have to be dark to be read.
-        let (tone, bright_tone) = if dark { (70.0, 82.0) } else { (40.0, 50.0) };
-        for (name, bright, rgb) in [
-            ("term_red", "term_bright_red", 0xE5_5B_5Bu32),
-            ("term_green", "term_bright_green", 0x5B_C2_6A),
-            ("term_yellow", "term_bright_yellow", 0xD9_B2_4C),
-            ("term_blue", "term_bright_blue", 0x5B_8F_E5),
-            ("term_magenta", "term_bright_magenta", 0xC2_6B_D9),
-            ("term_cyan", "term_bright_cyan", 0x4C_C2_C2),
+        // A terminal's colors are the palette's own, all shades of the wallpaper, like Noctalia's:
+        // red is still the palette's error color, so errors read as errors, and the rest are its
+        // primary, secondary and tertiary colors, each at its own tone so that no two are alike.
+        // On a light background, they have to be dark to be read; bright is a step further from
+        // the background.
+        let (light, middle, deep) = if dark {
+            ((80.0, 90.0), (74.0, 85.0), (68.0, 78.0))
+        } else {
+            ((40.0, 30.0), (45.0, 35.0), (50.0, 40.0))
+        };
+        for (name, bright, rgb, (tone, bright_tone)) in [
+            ("term_red", "term_bright_red", s.error, light),
+            ("term_green", "term_bright_green", s.primary, light),
+            ("term_yellow", "term_bright_yellow", s.tertiary, light),
+            // Secondary is primary's hue, greyer: at the same tone, the two would be alike.
+            ("term_blue", "term_bright_blue", s.secondary, middle),
+            ("term_magenta", "term_bright_magenta", s.primary, deep),
+            ("term_cyan", "term_bright_cyan", s.tertiary, deep),
         ] {
-            roles.push((name, ansi(rgb, tone)));
-            roles.push((bright, ansi(rgb, bright_tone)));
+            roles.push((name, at_tone(rgb, tone)));
+            roles.push((bright, at_tone(rgb, bright_tone)));
         }
         Self(roles)
     }
@@ -535,10 +533,7 @@ fn read_state(line: &str) -> (bool, bool, Option<String>) {
 
 /// Goes up when the palette's roles come out differently for the same seed, so the files made
 /// from it are written again.
-const PALETTE_VERSION: u32 = 3;
-
-/// The most colorful a terminal's colors get.
-const TERMINAL_CHROMA: f64 = 36.0;
+const PALETTE_VERSION: u32 = 4;
 
 /// Changes when a template does, built in or the user's, or the palette, which means files have to
 /// be written again.
