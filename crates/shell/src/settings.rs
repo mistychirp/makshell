@@ -517,6 +517,8 @@ struct SettingsApp {
     wallpaper_colors: Vec<[u8; 3]>,
     match_apps: bool,
     macos_icons: bool,
+    /// Why the macOS icons couldn't be made, if they couldn't.
+    icons_problem: Option<String>,
     /// How many copied things the clipboard's history keeps.
     clipboard_max: usize,
     /// The history was just cleared, which the button says.
@@ -695,6 +697,7 @@ impl SettingsApp {
             wallpaper_colors: Vec::new(),
             match_apps: config.appearance.match_apps,
             macos_icons: config.appearance.macos_icons,
+            icons_problem: crate::icon_themes::problem(),
             clipboard_max: config.clipboard.max_items,
             clipboard_cleared: false,
             palette_preview: Vec::new(),
@@ -1008,6 +1011,7 @@ impl SettingsApp {
                     self.accent = config.appearance.accent;
                     self.match_apps = config.appearance.match_apps;
                     self.macos_icons = config.appearance.macos_icons;
+                    self.icons_problem = crate::icon_themes::problem();
                     self.clipboard_max = config.clipboard.max_items;
                     self.show_accent();
                     return Task::batch([
@@ -1296,7 +1300,11 @@ impl SettingsApp {
                             settings_toggle(self.macos_icons, Message::MacosIconsToggled),
                         ),
                     ]),
-                    caption("Auto switches at sunrise and sunset.",),
+                    caption("Auto switches at sunrise and sunset."),
+                    match (&self.icons_problem, self.macos_icons) {
+                        (Some(problem), true) => caption(problem),
+                        _ => Space::new().into(),
+                    },
                 ]
                 .spacing(6),
             ),

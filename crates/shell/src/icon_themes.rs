@@ -82,6 +82,47 @@ fn fingerprint(builder: &std::path::Path) -> String {
     format!("{:016x}", hasher.finish())
 }
 
+/// Why the icons couldn't be made, for Settings to say, from what the builder said: most often,
+/// something it needs isn't installed.
+fn problem_in(errors: &str) -> String {
+    let missing: Vec<&str> = errors
+        .lines()
+        .filter_map(|line| line.strip_prefix("missing dependency: "))
+        .filter_map(|what| what.split_whitespace().next())
+        .collect();
+    if missing.is_empty() {
+        String::from("Couldn't make them; the log says why.")
+    } else {
+        format!("Needs {} to make them.", missing.join(" and "))
+    }
+}
+
+fn problem_file() -> PathBuf {
+    appearance::state_dir().join("icons-problem")
+}
+
+fn note_problem(problem: Option<&str>) {
+    let file = problem_file();
+    let result = match problem {
+        Some(problem) => fs::write(&file, problem),
+        None => match fs::remove_file(&file) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        },
+    };
+    if let Err(err) = result {
+        log::warn!("can't note how building the icons went: {err}");
+    }
+}
+
+/// Why the icons couldn't be made last time, if they couldn't.
+pub fn problem() -> Option<String> {
+    fs::read_to_string(problem_file())
+        .ok()
+        .map(|problem| problem.trim().to_owned())
+        .filter(|problem| !problem.is_empty())
+}
+
 /// What a build came to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Built {
@@ -146,13 +187,16 @@ fn build_now() -> Built {
                 output.status,
                 last.into_iter().rev().collect::<Vec<_>>().join(" / ")
             );
+            note_problem(Some(&problem_in(&errors)));
             return Built::Nothing;
         }
         Err(err) => {
             log::warn!("couldn't run {}: {err}", builder.display());
+            note_problem(Some("Couldn't make them; the log says why."));
             return Built::Nothing;
         }
     }
+    note_problem(None);
     if let Some(parent) = state.parent() {
         let _ = fs::create_dir_all(parent);
     }
@@ -164,5 +208,24 @@ fn build_now() -> Built {
         Built::Remade
     } else {
         Built::First
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::problem_in;
+
+    #[test]
+    fn a_missing_tool_is_named() {
+        let errors = "missing dependency: Pillow        (Arch: python-pillow  Debian/Ubuntu: python3-pil)\n\
+                      missing dependency: rsvg-convert  (Arch: librsvg)\n";
+        assert_eq!(
+            problem_in(errors),
+            "Needs Pillow and rsvg-convert to make them."
+        );
+        assert_eq!(
+            problem_in("Traceback ..."),
+            "Couldn't make them; the log says why."
+        );
     }
 }
