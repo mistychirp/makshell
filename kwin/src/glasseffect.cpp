@@ -74,6 +74,8 @@ static constexpr int s_maxKeys = 4;
 static constexpr double s_clearShare = 0.3;
 /// How often a window that keeps changing has its background colors looked for again.
 static constexpr int s_keyLookMs = 1000;
+/// How long a keyed window is drawn by itself every frame after it last moved or was animated.
+static constexpr int s_keyedSettleMs = 300;
 /// The least opaque windows can be made, past which they'd be hard to read.
 static constexpr float s_leastWindowOpacity = 0.5f;
 
@@ -781,6 +783,24 @@ void GlassEffect::prePaintWindow(RenderView *view, EffectWindow *w, WindowPrePai
         data.setTranslucent();
     }
     effects->prePaintWindow(view, w, data);
+    // Moved, resized or animated by another effect, the window looks different without being
+    // damaged. Its own picture is drawn again every frame until it's settled, then once more, with
+    // its backgrounds looked for in that, or a frame from in between would stay.
+    if (auto it = m_windows.find(w); it != m_windows.end() && it->second.keyed) {
+        KeyedWindow &keyed = *it->second.keyed;
+        const RectF frame = w->frameGeometry();
+        if ((data.mask & PAINT_WINDOW_TRANSFORMED) || frame != keyed.lastFrame) {
+            keyed.settling.start();
+            keyed.lastFrame = frame;
+        }
+        if (keyed.settling.isValid()) {
+            keyed.dirty = true;
+            if (keyed.settling.elapsed() >= s_keyedSettleMs) {
+                keyed.settling.invalidate();
+                keyed.looked.invalidate();
+            }
+        }
+    }
 }
 
 PaintResult GlassEffect::paintWindow(const RenderTarget &renderTarget, const RenderViewport &viewport, EffectWindow *w, int mask, const Region &deviceRegion, WindowPaintData &data)
@@ -811,6 +831,12 @@ void GlassEffect::postPaintScreen()
     // end of the loop.
     if (!m_awaitingGlass.empty()) {
         effects->addRepaintFull();
+    }
+    // A settling keyed window needs frames until it's settled, whether anything else asks for them.
+    for (const auto &[window, glass] : m_windows) {
+        if (glass.keyed && glass.keyed->settling.isValid()) {
+            effects->addRepaint(window->expandedGeometry());
+        }
     }
     std::vector<EffectWindowDeletedRef> finished;
     for (auto &[window, glass] : m_windows) {
@@ -862,7 +888,6 @@ bool GlassEffect::drawKeyed(const RenderTarget &renderTarget, const RenderViewpo
     if (textureSize.isEmpty()) {
         return false;
     }
-    bool resized = false;
     if (!keyed.texture || keyed.texture->size() != textureSize) {
         keyed.framebuffer.reset();
         keyed.texture = GLTexture::allocate(GL_RGBA8, textureSize);
@@ -873,9 +898,17 @@ bool GlassEffect::drawKeyed(const RenderTarget &renderTarget, const RenderViewpo
         keyed.texture->setWrapMode(GL_CLAMP_TO_EDGE);
         keyed.framebuffer = std::make_unique<GLFramebuffer>(keyed.texture.get());
         keyed.dirty = true;
-        resized = true;
+        // Changing size, which starts with its shadow going when it's maximized, before it moves
+        // or anything animates it: its backgrounds are looked for once that's over.
+        keyed.settling.start();
     }
     const RectF frameInTexture = RectF(w->frameGeometry()).translated(-expanded.topLeft());
+    if (data.crossFadeProgress() != keyed.crossFade) {
+        keyed.crossFade = data.crossFadeProgress();
+        keyed.dirty = true;
+        // Half one picture and half the other, it has no backgrounds of its own to look for.
+        keyed.settling.start();
+    }
     if (keyed.dirty) {
         RenderTarget target(keyed.framebuffer.get());
         RenderViewport targetViewport(expanded, textureScale, target, QPoint());
@@ -884,10 +917,13 @@ bool GlassEffect::drawKeyed(const RenderTarget &renderTarget, const RenderViewpo
         glClear(GL_COLOR_BUFFER_BIT);
         WindowPaintData plain;
         plain.setOpacity(1.0);
+        // KWin's cross-fade (maximizing's, for one) draws the window's new picture only once it's
+        // under way: without this, only the old one, stretched, would show.
+        plain.setCrossFadeProgress(data.crossFadeProgress());
         (void)effects->drawWindow(target, targetViewport, w, PAINT_WINDOW_TRANSFORMED | PAINT_WINDOW_TRANSLUCENT, Region::infinite(), plain);
         GLFramebuffer::popFramebuffer();
         keyed.dirty = false;
-        if (resized || !keyed.looked.isValid() || keyed.looked.elapsed() >= s_keyLookMs) {
+        if (!keyed.settling.isValid() && (!keyed.looked.isValid() || keyed.looked.elapsed() >= s_keyLookMs)) {
             const Rect frameDevice = RectF(frameInTexture.x() * textureScale, frameInTexture.y() * textureScale,
                                            frameInTexture.width() * textureScale, frameInTexture.height() * textureScale)
                                          .rounded();

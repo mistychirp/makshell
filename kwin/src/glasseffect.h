@@ -119,6 +119,14 @@ struct KeyedWindow {
     std::unique_ptr<KWin::GLFramebuffer> framebuffer;
     /// The window has changed since it was last drawn by itself.
     bool dirty = true;
+    /// Running since it last moved, was resized or was animated by another effect, like KWin's
+    /// maximize: all changes the window doesn't damage itself for. Until it's settled, it's drawn
+    /// by itself every frame, and its backgrounds aren't looked for in the frames in between.
+    QElapsedTimer settling;
+    /// Where it was, to tell when that changes.
+    KWin::RectF lastFrame;
+    /// How far KWin's cross-fade from its old picture to its new one had got, like maximizing's.
+    qreal crossFade = 0;
     /// Its background colors, as they're stored in the texture.
     QList<QVector3D> keys;
     /// It's see-through by itself, like a terminal set up that way, and keeps its own opacity.
