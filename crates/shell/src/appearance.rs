@@ -247,9 +247,10 @@ impl Palette {
             .scheme
             .into();
         // A palette's color at another tone, for terminals.
+        // Never paler than TERMINAL_CHROMA, which at the tones text needs would wash out to white.
         let at_tone = |rgb: Rgb, tone: f64| -> Rgb {
             let hct: Hct = rgb.into();
-            Hct::from(hct.get_hue(), hct.get_chroma(), tone).into()
+            Hct::from(hct.get_hue(), hct.get_chroma().max(TERMINAL_CHROMA), tone).into()
         };
         // Text on a container color. The content scheme only gives it the least contrast that's
         // readable, which is tiring in a terminal's selection: this keeps its hue, and the way it
@@ -360,7 +361,7 @@ impl Palette {
         // On a light background, they have to be dark to be read; bright is a step further from
         // the background.
         let (light, middle, deep) = if dark {
-            ((80.0, 90.0), (74.0, 85.0), (68.0, 78.0))
+            ((72.0, 80.0), (68.0, 77.0), (62.0, 72.0))
         } else {
             ((40.0, 30.0), (45.0, 35.0), (50.0, 40.0))
         };
@@ -533,7 +534,10 @@ fn read_state(line: &str) -> (bool, bool, Option<String>) {
 
 /// Goes up when the palette's roles come out differently for the same seed, so the files made
 /// from it are written again.
-const PALETTE_VERSION: u32 = 4;
+const PALETTE_VERSION: u32 = 5;
+
+/// The least colorful a terminal's colors get.
+const TERMINAL_CHROMA: f64 = 48.0;
 
 /// Changes when a template does, built in or the user's, or the palette, which means files have to
 /// be written again.
