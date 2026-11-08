@@ -140,9 +140,58 @@ pub async fn capture_window(uuid: String, max_size: u32) -> Option<image::Handle
     thumbnail(&bytes, width, height, stride, format, max_size)
 }
 
-/// QImage's formats: what KWin sends, either way around.
-const QIMAGE_ARGB32_PREMULTIPLIED: u32 = 6;
-const QIMAGE_RGBA8888_PREMULTIPLIED: u32 = 17;
+/// The 8-bit QImage formats KWin sends, by QImage::Format's number (KWin 6.7's renderer sent
+/// ARGB32_Premultiplied, 6.8's RGBA8888_Premultiplied): the order of the bytes in memory, and
+/// what the alpha byte holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PixelFormat {
+    /// Format_RGB32, ARGB32 and ARGB32_Premultiplied: 0xAARRGGBB words, so blue first.
+    Bgra(Alpha),
+    /// Format_RGBX8888, RGBA8888 and RGBA8888_Premultiplied: red first.
+    Rgba(Alpha),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Alpha {
+    /// Not used: the picture is opaque.
+    Opaque,
+    Straight,
+    Premultiplied,
+}
+
+impl PixelFormat {
+    fn from_qimage(format: u32) -> Option<Self> {
+        Some(match format {
+            4 => Self::Bgra(Alpha::Opaque),
+            5 => Self::Bgra(Alpha::Straight),
+            6 => Self::Bgra(Alpha::Premultiplied),
+            16 => Self::Rgba(Alpha::Opaque),
+            17 => Self::Rgba(Alpha::Straight),
+            18 => Self::Rgba(Alpha::Premultiplied),
+            _ => return None,
+        })
+    }
+
+    /// One pixel as straight RGBA, which iced wants.
+    fn straight_rgba(self, pixel: &[u8]) -> [u8; 4] {
+        let (rgba, alpha) = match self {
+            Self::Bgra(alpha) => ([pixel[2], pixel[1], pixel[0], pixel[3]], alpha),
+            Self::Rgba(alpha) => ([pixel[0], pixel[1], pixel[2], pixel[3]], alpha),
+        };
+        let [r, g, b, a] = rgba;
+        match alpha {
+            Alpha::Opaque => [r, g, b, 255],
+            Alpha::Straight => rgba,
+            Alpha::Premultiplied => {
+                let straight = |c: u8| match a {
+                    0 => 0,
+                    a => (u16::from(c) * 255 / u16::from(a)).min(255) as u8,
+                };
+                [straight(r), straight(g), straight(b), a]
+            }
+        }
+    }
+}
 
 fn thumbnail(
     bytes: &[u8],
@@ -155,21 +204,14 @@ fn thumbnail(
     if width == 0 || height == 0 || bytes.len() < (stride * height) as usize {
         return None;
     }
+    let Some(pixel_format) = PixelFormat::from_qimage(format) else {
+        log::warn!("can't read a window's picture in QImage format {format}");
+        return None;
+    };
     let mut rgba = Vec::with_capacity((width * height * 4) as usize);
     for line in bytes.chunks_exact(stride as usize).take(height as usize) {
         for pixel in line[..(width * 4) as usize].chunks_exact(4) {
-            let [r, g, b, a] = match format {
-                // In memory, little-endian: blue first.
-                QIMAGE_ARGB32_PREMULTIPLIED => [pixel[2], pixel[1], pixel[0], pixel[3]],
-                QIMAGE_RGBA8888_PREMULTIPLIED => [pixel[0], pixel[1], pixel[2], pixel[3]],
-                _ => return None,
-            };
-            // iced wants straight alpha.
-            let straight = |c: u8| match a {
-                0 => 0,
-                a => (u16::from(c) * 255 / u16::from(a)).min(255) as u8,
-            };
-            rgba.extend_from_slice(&[straight(r), straight(g), straight(b), a]);
+            rgba.extend_from_slice(&pixel_format.straight_rgba(pixel));
         }
     }
     let full = ::image::RgbaImage::from_raw(width, height, rgba)?;
@@ -524,4 +566,41 @@ fn layout_stream() -> impl Stream<Item = KeyboardLayouts> {
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Alpha, PixelFormat, thumbnail};
+
+    #[test]
+    fn pixels_come_out_straight_whichever_format_kwin_sends() {
+        // Half-transparent red, premultiplied, as 6.7 (ARGB32, blue first) and 6.8 (RGBA8888) send it.
+        let argb = PixelFormat::from_qimage(6).unwrap();
+        let rgba = PixelFormat::from_qimage(18).unwrap();
+        assert_eq!(argb, PixelFormat::Bgra(Alpha::Premultiplied));
+        assert_eq!(argb.straight_rgba(&[0, 0, 128, 128]), [255, 0, 0, 128]);
+        assert_eq!(rgba.straight_rgba(&[128, 0, 0, 128]), [255, 0, 0, 128]);
+        // Straight alpha stays as it is; an unused alpha byte means opaque.
+        assert_eq!(
+            PixelFormat::from_qimage(17)
+                .unwrap()
+                .straight_rgba(&[200, 0, 0, 128]),
+            [200, 0, 0, 128]
+        );
+        assert_eq!(
+            PixelFormat::from_qimage(4)
+                .unwrap()
+                .straight_rgba(&[0, 0, 200, 0]),
+            [200, 0, 0, 255]
+        );
+        assert_eq!(PixelFormat::from_qimage(19), None);
+    }
+
+    #[test]
+    fn a_window_in_kwin_68s_format_makes_a_thumbnail() {
+        let (width, height, stride) = (4, 2, 16);
+        let bytes = vec![255; (stride * height) as usize];
+        assert!(thumbnail(&bytes, width, height, stride, 18, 64).is_some());
+        assert!(thumbnail(&bytes, width, height, stride, 19, 64).is_none());
+    }
 }
