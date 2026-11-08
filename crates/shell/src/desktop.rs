@@ -41,12 +41,19 @@ pub fn settings() -> NewLayerShellSettings {
         layer: Layer::Bottom,
         size: Some((0, 0)),
         exclusive_zone: Some(-1),
-        // Clicking the desktop takes the keyboard from the active window, like on macOS.
-        keyboard_interactivity: KeyboardInteractivity::OnDemand,
+        // None at first, then on demand, so that clicking the desktop takes the keyboard from the
+        // active window, like on macOS. KWin activates a new surface that takes the keyboard as it
+        // appears, which after the shell restarts takes it from the window that had it, and leaves
+        // the shell thinking no app is in front. One that only starts taking it later isn't.
+        keyboard_interactivity: KeyboardInteractivity::None,
         namespace: Some(String::from("dock")),
         ..Default::default()
     }
 }
+
+/// How long after the desktop's surface opens it starts taking the keyboard: by then, it's been
+/// shown, and KWin no longer activates it for that.
+pub const KEYBOARD_AFTER: Duration = Duration::from_secs(1);
 
 /// How big things are on the desktop, which View Options can change.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

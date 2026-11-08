@@ -10,7 +10,8 @@ use iced_futures::backend::native::tokio::time;
 use iced_layershell::actions::{ActionCallback, IcedNewPopupSettings};
 use iced_layershell::daemon;
 use iced_layershell::reexport::{
-    IcedId, Layer, PopupAnchor, PopupConstraintAdjustment, PopupGravity, Task, WithConnection,
+    IcedId, KeyboardInteractivity, Layer, PopupAnchor, PopupConstraintAdjustment, PopupGravity,
+    Task, WithConnection,
 };
 use iced_layershell::settings::{LayerShellSettings, Settings, StartMode};
 use iced_layershell::to_layer_message;
@@ -1460,7 +1461,15 @@ impl Shell {
                 self.screen_height = size.height;
                 self.desktop.set_size(size);
                 let reach = if self.desktop_surface.is_none() {
-                    self.reach_surface(id)
+                    Task::batch([
+                        self.reach_surface(id),
+                        Task::perform(tokio::time::sleep(desktop::KEYBOARD_AFTER), move |()| {
+                            Message::KeyboardInteractivityChange {
+                                id,
+                                keyboard_interactivity: KeyboardInteractivity::OnDemand,
+                            }
+                        }),
+                    ])
                 } else {
                     Task::none()
                 };
