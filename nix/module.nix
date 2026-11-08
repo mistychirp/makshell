@@ -52,6 +52,45 @@ let
 
     ${polkit-kde-agent-1}/libexec/polkit-kde-authentication-agent-1 &
 
+    # Logging out: the shell quit. The apps in the session are asked to close while KWin is still there,
+    # so they close rather than crash as their windows go. Then the portals stop, since without a display
+    # KDE's aborts, and its crash reporter with it, over and over. Then this ends, and KWin with it, which
+    # the display manager sees as the session ending. Ending it through logind instead also kills the
+    # display manager's own process for the session, which SDDM takes as a crash: no login screen after.
+    end_session() {
+        scope=$(sed -n 's/^0:://p' /proc/$$/cgroup)
+        procs=/sys/fs/cgroup$scope/cgroup.procs
+        if [ -n "$scope" ] && [ -r "$procs" ]; then
+            # This script, and KWin and what started it, up to the display manager, stay.
+            keep=" $$ "
+            pid=$kwin_pid
+            while [ -n "$pid" ] && [ "$pid" -gt 1 ]; do
+                keep="$keep$pid "
+                pid=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null)
+            done
+            apps=""
+            for pid in $(cat "$procs"); do
+                case "$keep" in *" $pid "*) continue ;; esac
+                # KWin's own, which goes with it.
+                [ "$(cat "/proc/$pid/comm" 2>/dev/null)" = Xwayland ] && continue
+                kill -TERM "$pid" 2>/dev/null && apps="$apps $pid"
+            done
+            # Up to five seconds for them to finish.
+            tries=0
+            while [ -n "$apps" ] && [ "$tries" -lt 10 ]; do
+                sleep 0.5
+                left=""
+                for pid in $apps; do
+                    kill -0 "$pid" 2>/dev/null && left="$left $pid"
+                done
+                apps=$left
+                tries=$((tries + 1))
+            done
+        fi
+        systemctl --user stop plasma-xdg-desktop-portal-kde.service xdg-desktop-portal.service
+        systemctl --user stop makshell-session.target
+    }
+
     # The shell, restarted if it crashes, for as long as this KWin lives. If KWin itself crashes,
     # its wrapper starts a new one on the same socket, which runs a new copy of this script; this
     # copy has to bow out, or there would be two shells.
@@ -68,7 +107,7 @@ let
         ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Effect-fade --key FadeInTime --delete
         ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Effect-fade --key FadeOutTime --delete
         ${pkgs.kdePackages.kconfig}/bin/kwriteconfig6 --file kwinrc --group Effect-slide --key SlideBackground --delete
-        systemctl --user stop makshell-session.target
+        end_session
         exit 0
       fi
       sleep 1

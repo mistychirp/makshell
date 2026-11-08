@@ -87,7 +87,8 @@ check_runtime() {
     # names on Arch, Debian, Ubuntu and Fedora.
     pages=""
     if command -v kcmshell6 >/dev/null; then
-        modules=$(kcmshell6 --list 2>/dev/null)
+        # Without a display, as over SSH or on a console, it aborts unless told there isn't one.
+        modules=$(QT_QPA_PLATFORM=offscreen kcmshell6 --list 2>/dev/null || true)
         for page in kcm_networkmanagement:plasma-nm kcm_bluetooth:bluedevil kcm_pulseaudio:plasma-pa \
                     kcm_kscreen:kscreen kcm_keyboard:plasma-desktop; do
             printf '%s\n' "$modules" | grep -q "^${page%%:*} " || pages="${pages:+$pages }${page#*:}"
