@@ -286,7 +286,8 @@ void Decoration::updateGeometry()
     setTitleBar(QRectF(0, 0, window->width(), titleHeight));
 
     const bool maximized = window->isMaximized();
-    setResizeOnlyBorders(maximized ? QMarginsF() : QMarginsF(s_resizeBorder, 0, s_resizeBorder, s_resizeBorder));
+    // Just outside the window, all the way around, since there's no border to grab.
+    setResizeOnlyBorders(maximized ? QMarginsF() : QMarginsF(s_resizeBorder, s_resizeBorder, s_resizeBorder, s_resizeBorder));
     const KDecoration3::BorderRadius radius(maximized ? 0 : s_cornerRadius);
     setBorderRadius(radius);
     setBorderOutline(maximized ? KDecoration3::BorderOutline()
