@@ -92,7 +92,7 @@ sudo ./install.sh install    # into /usr/local
 ```
 
 `build` also downloads [MacOS-Like](https://github.com/Scrimas/MacOS-Like), which the icons are
-built with, and the macOS cursor.
+built with, and the [macOS cursor](https://github.com/ful1e5/apple_cursor).
 
 Log out, and choose **makshell** at the login screen. SDDM and GDM find it in `/usr/local`. If yours
 doesn't list it, install into `/usr` instead, with `PREFIX=/usr` for both commands.
