@@ -40,6 +40,7 @@ build() {
     fetch_icons
     fetch_cursor
     say "Built. Now: sudo ./install.sh install"
+    check_runtime
 }
 
 fetch_icons() {
@@ -55,9 +56,32 @@ fetch_icons() {
         git -C "$dir" fetch -q --depth 1 "$MACOS_LIKE_REPO" "$rev"
         git -C "$dir" checkout -q FETCH_HEAD
     fi
-    # The shell runs it later, as each user; it's only worth saying now.
-    python3 -c 'import PIL' 2>/dev/null && command -v rsvg-convert >/dev/null \
-        || say "Note: the app icons need Pillow and rsvg-convert (see README.md)"
+}
+
+# What makshell needs at runtime that a build doesn't, which a newer version can add to: the
+# packages, by this distro's names, said where they can't be missed, at the end of the build.
+check_runtime() {
+    if command -v pacman >/dev/null; then
+        pillow=python-pillow rsvg=librsvg install="sudo pacman -S --needed"
+    elif command -v apt-get >/dev/null; then
+        pillow=python3-pil rsvg=librsvg2-bin install="sudo apt install"
+    elif command -v dnf >/dev/null; then
+        pillow=python3-pillow rsvg=librsvg2-tools install="sudo dnf install"
+    else
+        pillow="Pillow" rsvg=rsvg-convert install=""
+    fi
+    missing=""
+    python3 -c 'import PIL' 2>/dev/null || missing="$pillow"
+    command -v rsvg-convert >/dev/null || missing="${missing:+$missing }$rsvg"
+    [ -z "$missing" ] && return
+    printf '\n'
+    say "The macOS app icons can't be made without: $missing"
+    if [ -n "$install" ]; then
+        say "Install it, then log in again:  $install $missing"
+    else
+        say "Install Python's Pillow and rsvg-convert with your package manager, then log in again."
+    fi
+    printf '\n'
 }
 
 fetch_cursor() {

@@ -106,6 +106,7 @@ To remove it: `sudo ./install.sh uninstall`. Your settings in `~/.config/makshel
 sudo ./install.sh install
 ```
 
+A newer makshell can need a package it didn't before; `build` ends by saying so if one's missing.
 It's safe to do from inside the makshell session; the new version starts when you log out and back
 in. Run `./install.sh build` and `sudo ./install.sh install` after every KWin update too: the plugins
 must be built against the KWin they load into, and if they don't match, KWin won't load them and the
