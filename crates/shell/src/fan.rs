@@ -16,6 +16,7 @@ use wayland_client::protocol::wl_surface::WlSurface;
 
 use crate::anim::{Motion, Spring};
 use crate::app::{Element, Message};
+use crate::icons::Glyph;
 use crate::{dock, fonts, material, menu};
 
 /// How far apart the rows are, and how big a file's picture is.
@@ -90,6 +91,35 @@ impl Label {
 }
 
 /// A file, in the fan.
+/// What can be done with one of its files, from its menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileAction {
+    Open,
+    /// The folder it's in, with it selected.
+    ShowInFiles,
+    GetInfo,
+    MoveToTrash,
+}
+
+/// Shows a file in the file manager, selected in its folder, or returns false if there's no file
+/// manager that does that.
+pub async fn show_in_files(path: PathBuf) -> bool {
+    let Some(connection) = crate::dbus::session().await else {
+        return false;
+    };
+    connection
+        .call_method(
+            Some("org.freedesktop.FileManager1"),
+            "/org/freedesktop/FileManager1",
+            Some("org.freedesktop.FileManager1"),
+            "ShowItems",
+            &(vec![crate::places::file_uri(&path)], ""),
+        )
+        .await
+        .inspect_err(|err| log::debug!("no file manager to show a file in: {err}"))
+        .is_ok()
+}
+
 pub struct Row {
     pub path: PathBuf,
     label: Label,
@@ -356,6 +386,22 @@ impl Fan {
         best.map(|(index, _)| index)
     }
 
+    /// What a file's row offers, like a file on the desktop.
+    pub fn file_menu(&self, index: usize) -> Option<Vec<menu::Entry>> {
+        let path = &self.rows.get(index)?.path;
+        let item = |label: &str, action: FileAction| {
+            menu::Entry::item(label, Message::FanFile(action, path.clone()))
+        };
+        Some(vec![
+            item("Open", FileAction::Open),
+            item("Show in Files", FileAction::ShowInFiles),
+            menu::Entry::Separator,
+            item("Get Info", FileAction::GetInfo).icon(menu::Icon::Glyph(Glyph::Info)),
+            menu::Entry::Separator,
+            item("Move to Trash", FileAction::MoveToTrash),
+        ])
+    }
+
     /// Whether this row is a file, rather than the way to the folder.
     pub fn is_file(&self, index: usize) -> bool {
         index < self.rows.len()
@@ -439,6 +485,7 @@ impl Fan {
         .on_move(Message::FanMoved)
         .on_press(Message::FanPressed)
         .on_release(Message::FanReleased)
+        .on_right_press(Message::FanRightPressed)
         .into()
     }
 }

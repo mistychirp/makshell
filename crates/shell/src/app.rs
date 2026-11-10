@@ -274,6 +274,10 @@ pub enum Message {
     FanMoved(Point),
     FanPressed,
     FanReleased,
+    /// A right press in the fan: over a file, its menu.
+    FanRightPressed,
+    /// Something chosen from a file's menu in the fan.
+    FanFile(fan::FileAction, PathBuf),
     /// An animation frame for the fan.
     FanFrame,
     /// A picture of a file in the fan.
@@ -1875,6 +1879,60 @@ impl Shell {
                     }
                     None => self.open_place(Place::Downloads),
                 }
+            }
+            Message::FanRightPressed => {
+                let point = self.fan_pointer;
+                let Some(open) = &mut self.fan else {
+                    return Task::none();
+                };
+                if open.is_closing() {
+                    return Task::none();
+                }
+                let Some(entries) = open.row_at(point).and_then(|index| open.file_menu(index))
+                else {
+                    return Task::none();
+                };
+                // It isn't the start of a press or a drag.
+                open.pressed = None;
+                let size = menu::size(&entries);
+                let anchor = (point.x as i32, point.y as i32, 1, 1);
+                let settings = IcedNewPopupSettings::new(open.id, size, anchor)
+                    .anchor(PopupAnchor::BottomRight)
+                    .gravity(PopupGravity::BottomRight);
+                return self.open_popup(None, settings, PopupContent::Menu(entries), 0.0, None);
+            }
+            Message::FanFile(action, path) => {
+                let close = self.close_popup();
+                if let Some(open) = &mut self.fan {
+                    open.close();
+                }
+                let done = match action {
+                    fan::FileAction::Open => {
+                        apps::spawn(vec![String::from("xdg-open"), path.display().to_string()]);
+                        Task::none()
+                    }
+                    fan::FileAction::ShowInFiles => {
+                        Task::perform(fan::show_in_files(path), |shown| {
+                            // Its folder, at least.
+                            if shown {
+                                Message::Nothing
+                            } else {
+                                Message::DockMenu(dock::MenuAction::OpenPlace(Place::Downloads))
+                            }
+                        })
+                    }
+                    fan::FileAction::GetInfo => {
+                        Task::future(desktop::get_info(vec![path])).discard()
+                    }
+                    fan::FileAction::MoveToTrash => {
+                        if let Err(err) = places::move_to_trash(&path) {
+                            log::warn!("can't move {} to the trash: {err}", path.display());
+                        }
+                        // The trash can fills right away, rather than at the next tick.
+                        Task::done(Message::Tick)
+                    }
+                };
+                return Task::batch([close, done]);
             }
             Message::FanFrame => {
                 if let Some(open) = &self.fan
