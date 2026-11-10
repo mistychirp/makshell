@@ -164,6 +164,17 @@ pub struct MaterialSurface {
     surface: WlSurface,
     effect: Effect,
     shadow: RefCell<Option<OrgKdeKwinShadow>>,
+    /// The parts of what the surface shows that are out of focus for now, which go out with its
+    /// shapes.
+    blurs: RefCell<Vec<ContentBlur>>,
+}
+
+/// Part of what a surface shows, drawn out of focus by a radius in logical pixels: how things come
+/// into view on Tahoe, blurred at first and sharp a moment later.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContentBlur {
+    pub rect: Rect,
+    pub radius: f32,
 }
 
 enum Effect {
@@ -190,7 +201,7 @@ impl Material {
             iced_layershell::toplevel::set_seat(seat);
         }
 
-        let manager = if let Ok(glass) = globals.bind(&queue, 1..=11, ()) {
+        let manager = if let Ok(glass) = globals.bind(&queue, 1..=12, ()) {
             log::info!("using liquid glass");
             Manager::Glass(glass)
         } else {
@@ -249,6 +260,7 @@ impl Material {
             surface,
             effect,
             shadow: RefCell::new(None),
+            blurs: RefCell::new(Vec::new()),
         }
     }
 
@@ -292,6 +304,15 @@ impl Material {
         if let Some(old) = target.shadow.replace(Some(shadow)) {
             old.destroy();
         }
+    }
+
+    /// Which parts of what the surface shows are out of focus. They go out with its shapes, the next
+    /// time those are set or queued, so set these first. Returns whether that's a change.
+    pub fn set_content_blurs(&self, target: &MaterialSurface, blurs: Vec<ContentBlur>) -> bool {
+        let mut current = target.blurs.borrow_mut();
+        let changed = *current != blurs;
+        *current = blurs;
+        changed
     }
 
     /// Replaces the material shapes and commits them right away.
@@ -477,6 +498,12 @@ impl Material {
                     glass.add_rounded_rect(x, y, width, height, shape.radius.max(0) as u32, style);
                     if opacity < 1.0 && glass.version() >= 10 {
                         glass.set_last_opacity(f64::from(opacity));
+                    }
+                }
+                if glass.version() >= 12 {
+                    for blur in target.blurs.borrow().iter() {
+                        let (x, y, width, height) = blur.rect;
+                        glass.add_content_blur(x, y, width, height, f64::from(blur.radius));
                     }
                 }
             }

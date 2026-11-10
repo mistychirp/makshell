@@ -18,7 +18,7 @@
 namespace Makshell
 {
 
-static constexpr int s_version = 11;
+static constexpr int s_version = 12;
 
 /// Reading pixels back stalls the GPU, so brightness is measured at most this often.
 static constexpr int s_probeIntervalMs = 500;
@@ -68,6 +68,7 @@ GlassSurface::GlassSurface(GlassManager *manager, KWin::SurfaceInterface *surfac
         }
         m_dirty = false;
         m_current = m_pending;
+        m_currentBlurs = m_pendingBlurs;
         if (m_manager && m_surface) {
             Q_EMIT m_manager->glassChanged(m_surface);
         }
@@ -140,6 +141,19 @@ void GlassSurface::makshell_glass_v1_clear(Resource *resource)
 {
     Q_UNUSED(resource)
     m_pending.clear();
+    m_pendingBlurs.clear();
+    m_dirty = true;
+}
+
+void GlassSurface::makshell_glass_v1_add_content_blur(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, wl_fixed_t radius)
+{
+    Q_UNUSED(resource)
+    const float logical = wl_fixed_to_double(radius);
+    // A handful is plenty, and all that's drawn.
+    if (width <= 0 || height <= 0 || logical <= 0 || m_pendingBlurs.size() >= s_mostContentBlurs) {
+        return;
+    }
+    m_pendingBlurs.append(ContentBlur{.rect = QRectF(x, y, width, height), .radius = std::min(logical, 64.0f)});
     m_dirty = true;
 }
 

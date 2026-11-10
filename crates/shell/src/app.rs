@@ -2779,7 +2779,9 @@ impl Shell {
                 self.control.clear_hover();
                 self.control.volume = audio::volume();
                 let reread = Task::perform(brightness::level(), Message::BrightnessRead);
-                let anchor = self.bar().screen_edge_anchor();
+                // Its surface starts a little above its bubbles.
+                let (x, y, width, height) = self.bar().screen_edge_anchor();
+                let anchor = (x, y, width, height - control::TOP_ROOM as i32);
                 let settings = IcedNewPopupSettings::new(
                     self.menubar_id,
                     control::size(&self.control),
@@ -3084,8 +3086,19 @@ impl Shell {
                     if let Some(appear) = appear {
                         material.set_appear(&target, appear);
                     }
-                    material.set_shapes(&target, &shapes);
+                    // Control Center's modules come in one after another, from the first frame on:
+                    // all their glass at once, even for a frame, would show before they do.
+                    let opacities = match popup.content {
+                        PopupContent::ControlCenter => {
+                            material
+                                .set_content_blurs(&target, control::content_blurs(&self.control));
+                            control::material_opacities(&self.control)
+                        }
+                        _ => Vec::new(),
+                    };
+                    material.set_faded_shapes(&target, &shapes, &opacities);
                     popup.shapes = shapes;
+                    popup.shape_opacities = opacities;
                     popup.material = Some(target);
                 }
                 _ => target.destroy(),
@@ -3793,7 +3806,14 @@ impl Shell {
             ),
             _ => return,
         };
-        if (shapes != popup.shapes || opacities != popup.shape_opacities)
+        // Modules come into focus as they come in, which goes out with the shapes.
+        let refocused = match (&popup.content, &self.material, &popup.material) {
+            (PopupContent::ControlCenter, Some(material), Some(target)) => {
+                material.set_content_blurs(target, control::content_blurs(&self.control))
+            }
+            _ => false,
+        };
+        if (shapes != popup.shapes || opacities != popup.shape_opacities || refocused)
             && let (Some(material), Some(target)) = (&self.material, &popup.material)
         {
             material.queue_faded_shapes(target, &shapes, &opacities);
@@ -4080,7 +4100,11 @@ impl Shell {
             open.sync_expansion();
             let shapes = open.material_shapes(width, height);
             let opacities = open.material_opacities();
-            if (shapes != open.shapes || opacities != open.opacities)
+            // The buttons' icons come into focus, which goes out with the shapes.
+            let refocused = open.material.as_ref().is_some_and(|target| {
+                material.set_content_blurs(target, open.content_blurs(width, height))
+            });
+            if (shapes != open.shapes || opacities != open.opacities || refocused)
                 && let Some(target) = &open.material
             {
                 material.queue_faded_shapes(target, &shapes, &opacities);

@@ -55,6 +55,10 @@ const SLIDE_ROW_DELAY: f32 = 0.055;
 const SLIDE_COLUMN_DELAY: f32 = 0.018;
 const SLIDE_MOST_DELAY: f32 = 0.22;
 const POP_TIME: f32 = SLIDE_MOST_DELAY + SLIDE_TIME;
+/// Each module comes into focus as it comes in: how far out of focus it starts, in logical pixels,
+/// and how long it takes.
+const POP_BLUR: f32 = 10.0;
+const POP_BLUR_TIME: f32 = 0.3;
 /// A module this close to where it's going is there. Glass only comes in whole points, and text is
 /// sharpest in place, so the last fraction of a point would only show as a jump.
 const POP_CLOSE_ENOUGH: f32 = 0.25;
@@ -83,6 +87,10 @@ const BLUR_BOTTOM: f32 = 90.0;
 const BLUR_TOP_FADE: f32 = 30.0;
 /// Between the bubbles and the edge of the screen, which the blur reaches.
 const MARGIN_RIGHT: f32 = 8.0;
+/// Above the bubbles, in the surface: the first row goes a little past its place on its way in, and
+/// what's outside the surface is cut off. It's the gap under the menu bar, so the bubbles are where
+/// they'd be without it.
+pub const TOP_ROOM: f32 = 4.0;
 
 const DIM: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.65);
 const FAINT: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.3);
@@ -278,7 +286,7 @@ fn modules(panel: &Panel) -> Vec<(Module, Rectangle, f32)> {
         height,
     };
     let capsule = CELL / 2.0;
-    let row = |n: f32| n * (CELL + GAP);
+    let row = |n: f32| TOP_ROOM + n * (CELL + GAP);
     let right = WIDE + GAP;
 
     let mut modules = vec![
@@ -334,7 +342,7 @@ pub fn size(panel: &Panel) -> (u32, u32) {
 fn bubbles_height(panel: &Panel) -> f32 {
     modules(panel)
         .iter()
-        .map(|(_, rect, _)| rect.y + rect.height)
+        .map(|(_, rect, _)| rect.y + rect.height - TOP_ROOM)
         .fold(0.0, f32::max)
 }
 
@@ -353,7 +361,7 @@ fn detail_rect(panel: &Panel) -> (Rectangle, f32) {
     (
         Rectangle {
             x: BLUR_LEFT,
-            y: 0.0,
+            y: TOP_ROOM,
             width: WIDTH,
             height: detail_height(panel),
         },
@@ -444,6 +452,31 @@ pub fn material_shapes(panel: &Panel) -> Vec<material::Shape> {
         .collect()
 }
 
+/// Which parts of the panel are out of focus: each module, on its way in as Control Center opens.
+pub fn content_blurs(panel: &Panel) -> Vec<material::ContentBlur> {
+    if panel.detail.is_some() || !is_popping(panel) {
+        return Vec::new();
+    }
+    modules(panel)
+        .iter()
+        .filter_map(|(_, rect, _)| {
+            let pop = pop(panel, rect);
+            let rect = pop.rect(rect);
+            // Tenths of a pixel are as fine as it shows.
+            let radius = (pop.blur * 10.0).round() / 10.0;
+            (radius > 0.0).then_some(material::ContentBlur {
+                rect: (
+                    rect.x.floor() as i32,
+                    rect.y.floor() as i32,
+                    rect.width.ceil() as i32 + 1,
+                    rect.height.ceil() as i32 + 1,
+                ),
+                radius,
+            })
+        })
+        .collect()
+}
+
 /// How opaque each of [`material_shapes`] is: the other modules fade while one morphs.
 pub fn material_opacities(panel: &Panel) -> Vec<f32> {
     let (Some(detail), Some(morph)) = (panel.detail, panel.morph) else {
@@ -482,6 +515,8 @@ struct Pop {
     dx: f32,
     dy: f32,
     shows: f32,
+    /// How far out of focus it is, in logical pixels.
+    blur: f32,
 }
 
 impl Pop {
@@ -490,6 +525,7 @@ impl Pop {
         dx: 0.0,
         dy: 0.0,
         shows: 1.0,
+        blur: 0.0,
     };
 
     fn rect(self, rect: &Rectangle) -> Rectangle {
@@ -514,7 +550,7 @@ fn pop(panel: &Panel, rect: &Rectangle) -> Pop {
     let open = out_back(seconds / OPEN_TIME, OPEN_OVERSHOOT);
     // It only grows: past its size, it stays at it.
     let scale = OPEN_FROM + (1.0 - OPEN_FROM) * open.min(1.0);
-    let row = (rect.y / (CELL + GAP)).round();
+    let row = ((rect.y - TOP_ROOM) / (CELL + GAP)).round();
     let column = ((rect.x - BLUR_LEFT) / (CELL + GAP)).round();
     let delay = (row * SLIDE_ROW_DELAY + column * SLIDE_COLUMN_DELAY).min(SLIDE_MOST_DELAY);
     let slid = if seconds <= delay {
@@ -532,12 +568,16 @@ fn pop(panel: &Panel, rect: &Rectangle) -> Pop {
     let (width, _) = size(panel);
     let corner_x = width as f32 - MARGIN_RIGHT;
     let center_x = rect.x + rect.width / 2.0;
-    let center_y = rect.y + rect.height / 2.0;
+    let center_y = rect.y - TOP_ROOM + rect.height / 2.0;
     Pop {
         scale,
         dx: (corner_x - center_x) * (1.0 - scale),
         dy: -center_y * (1.0 - scale) + slide * scale,
         shows: (open * OPEN_FADE).clamp(0.0, 1.0) * (slid * SLIDE_FADE).clamp(0.0, 1.0),
+        blur: {
+            let unfocused = (1.0 - (seconds - delay) / POP_BLUR_TIME).clamp(0.0, 1.0);
+            POP_BLUR * unfocused * unfocused
+        },
     }
 }
 
@@ -604,9 +644,13 @@ pub fn view(panel: &Panel, material: Option<material::Kind>) -> Element<'_> {
         (Some(detail), None) => {
             // A press beside it goes back to the modules; the detail keeps its own presses.
             return mouse_area(
-                container(pin(detail_view(detail, panel, material, true)).x(BLUR_LEFT))
-                    .width(Length::Fill)
-                    .height(Length::Fill),
+                container(
+                    pin(detail_view(detail, panel, material, true))
+                        .x(BLUR_LEFT)
+                        .y(TOP_ROOM),
+                )
+                .width(Length::Fill)
+                .height(Length::Fill),
             )
             .on_press(Message::ControlDetail(None))
             .into();

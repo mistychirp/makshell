@@ -138,6 +138,15 @@ struct KeyedWindow {
     QMetaObject::Connection damaged;
 };
 
+/// A window's own contents drawn by themselves, while parts of them are drawn blurred.
+struct BlurredContents {
+    /// With smaller copies of itself, which the blur is read from.
+    std::unique_ptr<KWin::GLTexture> texture;
+    std::unique_ptr<KWin::GLFramebuffer> framebuffer;
+    /// How many copies there are, the texture itself included.
+    int levels = 1;
+};
+
 /// What one glass shape keeps between frames, per render view.
 struct ShapeRender {
     ShapeRender() = default;
@@ -204,6 +213,10 @@ struct WindowGlass {
     std::optional<KWin::EffectWindowDeletedRef> deletedRef;
     /// The shapes, which outlive the surface, so that glass fades out with a closing window.
     QList<Shape> shapes;
+    /// The parts of its own contents that are out of focus for now.
+    QList<ContentBlur> contentBlurs;
+    /// There while any of it is.
+    std::unique_ptr<BlurredContents> blurred;
     /// The window's closing. Its glass is fading out with it, and needs repainting all the way.
     bool closing = false;
     /// It's an app's window, whose glass the effect put there, not the app.
@@ -269,6 +282,9 @@ private:
     /// Draws a window with only its background see-through, or returns false if it can't yet.
     bool drawKeyed(const KWin::RenderTarget &renderTarget, const KWin::RenderViewport &viewport, KWin::EffectWindow *w, const KWin::Region &deviceRegion, const KWin::WindowPaintData &data, KeyedWindow &keyed);
     void findBackgrounds(KeyedWindow &keyed, const KWin::Rect &frame);
+    /// Draws a window's contents with parts of them blurred, and all of them by `everywhere` logical
+    /// pixels, or returns false if it can't.
+    bool drawBlurred(const KWin::RenderTarget &renderTarget, const KWin::RenderViewport &viewport, KWin::EffectWindow *w, const KWin::Region &deviceRegion, const KWin::WindowPaintData &data, WindowGlass &glass, float everywhere);
     void windowMoved(KWin::EffectWindow *w, const KWin::RectF &oldGeometry);
     void placeDialog(KWin::EffectWindow *w);
     /// Draws a window's glass, blurring what's behind it again if that may have changed. Returns
@@ -299,6 +315,7 @@ private:
     std::unique_ptr<KWin::GLShader> m_downsampleShader;
     std::unique_ptr<KWin::GLShader> m_upsampleShader;
     std::unique_ptr<KWin::GLShader> m_keyedShader;
+    std::unique_ptr<KWin::GLShader> m_blurredShader;
     /// A window's background colors are found in a small copy of it.
     std::unique_ptr<KWin::GLTexture> m_keySampleTexture;
     std::unique_ptr<KWin::GLFramebuffer> m_keySampleFramebuffer;

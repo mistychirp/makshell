@@ -75,8 +75,12 @@ const DROP_SMALLEST: f32 = 0.4;
 const DROP_REACH: f32 = 16.0;
 const DROP_LETS_GO: [f32; 4] = [0.2, 0.3, 0.36, 0.42];
 /// When their icons start to show, and how long that takes.
-const CHIP_ICONS_AT: f32 = 0.3;
+const CHIP_ICONS_AT: f32 = 0.14;
 const CHIP_ICONS_FADE: f32 = 0.2;
+/// They come into focus as they fade in, like Tahoe's: how far out of focus they start, in logical
+/// pixels, and how long it takes.
+const CHIP_ICONS_BLUR: f32 = 8.0;
+const CHIP_ICONS_FOCUS: f32 = 0.44;
 /// When the drops are all still, and can be buttons of their own.
 const CHIPS_TIME: f32 = 0.62;
 /// How long after the panel starts to shrink back the buttons come out again.
@@ -461,6 +465,27 @@ impl Spotlight {
         )
     }
 
+    /// Where a round button is now: on its way out of the field's end as a drop, or in its place.
+    fn chip_center_now(&self, field: Rectangle, index: usize) -> Point {
+        let end = Self::chip_center(field, index);
+        if self.chips_are_out() {
+            return end;
+        }
+        let since = (self.timeline() - DROPS_AT).max(0.0);
+        let out = DROPS.progress_from(DROPS_SPEED, since);
+        let from = field.x + FIELD_WIDTH - CHIP_SIZE / 2.0;
+        Point::new(from + (end.x - from) * out, end.y)
+    }
+
+    /// How big a round button is now, as a share of its size: drops grow as they come out.
+    fn chip_size_now(&self) -> f32 {
+        if self.chips_are_out() {
+            return 1.0;
+        }
+        let since = (self.timeline() - DROPS_AT).max(0.0);
+        DROP_SMALLEST + (1.0 - DROP_SMALLEST) * DROPS_GROW.progress(since)
+    }
+
     /// How much of the round buttons shows, once they're out on their own.
     fn chips_show(&self) -> f32 {
         (1.0 - self.expansion().max(0.0) * 4.0).clamp(0.0, 1.0)
@@ -583,13 +608,9 @@ impl Spotlight {
         let mut drops = [[0; 4]; 4];
         let on_their_own = self.chips_are_out();
         if !on_their_own && self.chips_show() > 0.0 && timeline >= DROPS_AT {
-            let since = timeline - DROPS_AT;
-            let out = DROPS.progress_from(DROPS_SPEED, since);
-            let size = DROP_SMALLEST + (1.0 - DROP_SMALLEST) * DROPS_GROW.progress(since);
-            let from = field.x + FIELD_WIDTH - CHIP_SIZE / 2.0;
+            let size = self.chip_size_now();
             for (index, drop) in drops.iter_mut().enumerate() {
-                let end = Self::chip_center(field, index);
-                let center = Point::new(from + (end.x - from) * out, end.y);
+                let center = self.chip_center_now(field, index);
                 let reach = DROP_REACH * (1.0 - timeline / DROP_LETS_GO[index]).max(0.0);
                 *drop = drop_of(center, CHIP_SIZE / 2.0 * size, reach);
             }
@@ -629,6 +650,34 @@ impl Spotlight {
             }
         }
         shapes
+    }
+
+    /// Which parts of it are out of focus: the buttons' icons, as they come out.
+    pub fn content_blurs(&self, width: f32, height: f32) -> Vec<material::ContentBlur> {
+        let since = self.timeline() - CHIP_ICONS_AT;
+        if !(0.0..CHIP_ICONS_FOCUS).contains(&since) || self.chips_show() <= 0.0 {
+            return Vec::new();
+        }
+        let unfocused = 1.0 - since / CHIP_ICONS_FOCUS;
+        // Tenths of a pixel are as fine as it shows.
+        let radius = (CHIP_ICONS_BLUR * unfocused * unfocused * 10.0).round() / 10.0;
+        if radius <= 0.0 {
+            return Vec::new();
+        }
+        let (_, field) = Self::geometry(width, height);
+        let (first, last) = (
+            self.chip_center_now(field, 0),
+            self.chip_center_now(field, 3),
+        );
+        vec![material::ContentBlur {
+            rect: (
+                (first.x - CHIP_SIZE / 2.0) as i32,
+                (first.y - CHIP_SIZE / 2.0) as i32,
+                (last.x - first.x + CHIP_SIZE) as i32,
+                CHIP_SIZE as i32,
+            ),
+            radius,
+        }]
     }
 
     /// How opaque each of [`Spotlight::material_shapes`] is: the buttons go as the panel grows.
@@ -697,41 +746,43 @@ impl Spotlight {
 
         let icons_show = ((self.timeline() - CHIP_ICONS_AT) / CHIP_ICONS_FADE).clamp(0.0, 1.0)
             * self.chips_show();
-        let chips: Element<'a> = if icons_show > 0.0 {
-            row![
-                chip(Mode::Apps, Glyph::Grid),
-                Space::new().width(CHIP_GAP),
-                chip(Mode::Files, Glyph::Folder),
-                Space::new().width(CHIP_GAP),
-                chip(Mode::Actions, Glyph::Stacks),
-                Space::new().width(CHIP_GAP),
-                chip(Mode::Clipboard, Glyph::Clipboard),
+        let mut layers: Vec<Element<'a>> = vec![
+            container(Space::new()).width(width).height(height).into(),
+            pin(catcher).x(rect.x).y(rect.y).into(),
+        ];
+        // They can't be pressed where they can't be seen, which is under the panel. Each rides its
+        // drop out of the field, growing with it, like Tahoe's.
+        if icons_show > 0.0 {
+            let icon_size = 22.0 * self.chip_size_now();
+            for (index, (mode, glyph)) in [
+                (Mode::Apps, Glyph::Grid),
+                (Mode::Files, Glyph::Folder),
+                (Mode::Actions, Glyph::Stacks),
+                (Mode::Clipboard, Glyph::Clipboard),
             ]
-            .align_y(Alignment::Center)
-            .into()
-        } else {
-            // They can't be pressed where they can't be seen, which is under the panel.
-            Space::new().into()
-        };
-        let first_chip = Self::chip_center(field, 0);
+            .into_iter()
+            .enumerate()
+            {
+                let center = self.chip_center_now(field, index);
+                layers.push(
+                    pin(group(chip(mode, glyph, icon_size)).opacity(icons_show))
+                        .x(center.x - CHIP_SIZE / 2.0)
+                        .y(center.y - CHIP_SIZE / 2.0)
+                        .into(),
+                );
+            }
+        }
+        layers.push(
+            pin(group(body).opacity(shows).clip(clip))
+                .x(rect.x)
+                .y(rect.y + FIELD_HEIGHT)
+                .into(),
+        );
+        layers.push(pin(field_row).x(rect.x + FIELD_PADDING).y(rect.y).into());
 
-        mouse_area(
-            stack![
-                container(Space::new()).width(width).height(height),
-                pin(catcher).x(rect.x).y(rect.y),
-                pin(group(chips).opacity(icons_show))
-                    .x(first_chip.x - CHIP_SIZE / 2.0)
-                    .y(first_chip.y - CHIP_SIZE / 2.0),
-                pin(group(body).opacity(shows).clip(clip))
-                    .x(rect.x)
-                    .y(rect.y + FIELD_HEIGHT),
-                pin(field_row).x(rect.x + FIELD_PADDING).y(rect.y),
-            ]
-            .width(width)
-            .height(height),
-        )
-        .on_press(Message::SpotlightClose)
-        .into()
+        mouse_area(stack(layers).width(width).height(height))
+            .on_press(Message::SpotlightClose)
+            .into()
     }
 
     fn field<'a>(&'a self, glyph: Glyph, placeholder: &'a str) -> Element<'a> {
@@ -856,9 +907,9 @@ impl Spotlight {
 }
 
 /// A round button that opens a panel.
-fn chip<'a>(mode: Mode, glyph: Glyph) -> Element<'a> {
+fn chip<'a>(mode: Mode, glyph: Glyph, icon_size: f32) -> Element<'a> {
     button(
-        container(icons::icon(glyph, 22.0, Color::WHITE))
+        container(icons::icon(glyph, icon_size, Color::WHITE))
             .center_x(Length::Fill)
             .center_y(Length::Fill),
     )

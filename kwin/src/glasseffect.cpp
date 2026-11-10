@@ -98,6 +98,13 @@ static constexpr int s_edgeRepaint = 2;
 static constexpr size_t s_spareRenders = 6;
 /// How long glass a client let go of stays if its window turns out not to be closing.
 static constexpr int s_releasedGlassMs = 1000;
+/// How far out of focus a surface that fades or grows in starts, in logical pixels, and how long it
+/// takes to come into focus.
+static constexpr float s_appearBlur = 9.0f;
+static constexpr float s_appearBlurSeconds = 0.22f;
+/// How many smaller copies of a window's contents its blur can be read from: enough for a radius of
+/// 64 logical pixels at twice the scale.
+static constexpr int s_contentBlurLevels = 8;
 /// How long glass that's drawn again goes at most without blurring what's behind it again.
 static constexpr int s_reblurAnywayMs = 500;
 
@@ -131,7 +138,9 @@ GlassEffect::GlassEffect()
                                                                          QStringLiteral(":/effects/makshell/shaders/upsample.frag"));
     m_keyedShader = ShaderManager::instance()->generateShaderFromFile(ShaderTrait::MapTexture, QString(),
                                                                       QStringLiteral(":/effects/makshell/shaders/keyed.frag"));
-    if (!m_glassShader || !m_downsampleShader || !m_upsampleShader || !m_keyedShader) {
+    m_blurredShader = ShaderManager::instance()->generateShaderFromFile(ShaderTrait::MapTexture, QString(),
+                                                                        QStringLiteral(":/effects/makshell/shaders/blurred.frag"));
+    if (!m_glassShader || !m_downsampleShader || !m_upsampleShader || !m_keyedShader || !m_blurredShader) {
         qCWarning(MAKSHELL_GLASS) << "failed to load the glass shaders";
         return;
     }
@@ -678,6 +687,7 @@ void GlassEffect::updateWindow(EffectWindow *w)
 
     WindowGlass &data = m_windows[w];
     data.shapes = glass->shapes();
+    data.contentBlurs = glass->contentBlurs();
     if (glass->appear().kind != 0 && !data.appearing.isValid() && !w->isDeleted()) {
         data.appear = glass->appear();
         data.appearing.start();
@@ -706,6 +716,8 @@ struct AppearState {
     float scale = 1;
     float opacity = 1;
     float slide = 0;
+    /// How far out of focus what's in it is, in logical pixels.
+    float blur = 0;
     bool done = true;
 };
 
@@ -757,6 +769,12 @@ static AppearState appearState(const WindowGlass &glass)
         const float t = std::min(seconds / duration, 1.0f);
         state.opacity = t * t * (3 - 2 * t);
         state.done = t >= 1;
+        // What fades in comes into focus as it does, and for a moment after, like Tahoe's.
+        if (glass.appear.kind == fade) {
+            const float unfocused = std::max(1 - seconds / s_appearBlurSeconds, 0.0f);
+            state.blur = s_appearBlur * unfocused * unfocused;
+            state.done = state.done && unfocused <= 0;
+        }
         break;
     }
     case slide: {
@@ -771,6 +789,8 @@ static AppearState appearState(const WindowGlass &glass)
         const float value = spring(seconds, 0.26f, 0.62f);
         state.scale = 0.4f + 0.6f * value;
         state.opacity = std::min(seconds / 0.11f, 1.0f);
+        const float unfocused = std::max(1 - seconds / s_appearBlurSeconds, 0.0f);
+        state.blur = s_appearBlur * unfocused * unfocused;
         state.done = seconds >= 0.6f;
         if (state.done) {
             state.scale = 1;
@@ -983,6 +1003,22 @@ PaintResult GlassEffect::drawWindow(const RenderTarget &renderTarget, const Rend
 {
     const bool onScreen = &renderTarget == m_screenTarget;
     const bool reblurred = paintGlass(renderTarget, viewport, w, deviceRegion, data, onScreen && m_windows.contains(w) && behindChanged(w));
+    // What's in it, out of focus as it comes into view: all of it for a moment if it fades or grows
+    // in, and whichever parts its client says.
+    float unfocused = 0;
+    if (auto it = m_windows.find(w); onScreen && it != m_windows.end() && !it->second.keyed) {
+        WindowGlass &glass = it->second;
+        if (glass.appear.kind != 0 && !glass.disappearing.isValid()) {
+            unfocused = appearState(glass).blur;
+        }
+        if (unfocused <= 0 && glass.contentBlurs.isEmpty()) {
+            glass.blurred.reset();
+        } else if (drawBlurred(renderTarget, viewport, w, deviceRegion, data, glass, unfocused)) {
+            // It looks different every frame, with nothing else to say so.
+            noteDrawn(w, data, true);
+            return MAKSHELL_PAINTED;
+        }
+    }
     if (onScreen) {
         noteDrawn(w, data, reblurred);
     }
@@ -1120,6 +1156,134 @@ bool GlassEffect::drawKeyed(const RenderTarget &renderTarget, const RenderViewpo
     keyed.texture->bind();
     vbo->draw(clipRegion, GL_TRIANGLES, 0, geometry.count(), clipping);
     keyed.texture->unbind();
+    glDisable(GL_BLEND);
+    if (clipping) {
+        glDisable(GL_SCISSOR_TEST);
+    }
+    vbo->unbindArrays();
+    return true;
+}
+
+bool GlassEffect::drawBlurred(const RenderTarget &renderTarget, const RenderViewport &viewport, EffectWindow *w, const Region &deviceRegion, const WindowPaintData &data, WindowGlass &glass, float everywhere)
+{
+    // Drawn by itself first, like a window with only its background see-through, at its screen's scale.
+    const qreal textureScale = w->screen()->scale();
+    const RectF expanded = snapToPixels(w->expandedGeometry(), textureScale);
+    const QSize textureSize = (expanded.size() * textureScale).toSize();
+    if (textureSize.isEmpty()) {
+        return false;
+    }
+    if (!glass.blurred) {
+        glass.blurred = std::make_unique<BlurredContents>();
+    }
+    BlurredContents &contents = *glass.blurred;
+    if (!contents.texture || contents.texture->size() != textureSize) {
+        contents.framebuffer.reset();
+        const int smaller = std::floor(std::log2(std::min(textureSize.width(), textureSize.height())));
+        contents.levels = std::clamp(smaller + 1, 1, s_contentBlurLevels);
+        contents.texture = GLTexture::allocate(GL_RGBA8, textureSize, contents.levels);
+        if (!contents.texture) {
+            return false;
+        }
+        contents.texture->setFilter(GL_LINEAR_MIPMAP_LINEAR);
+        contents.texture->setWrapMode(GL_CLAMP_TO_EDGE);
+        contents.framebuffer = std::make_unique<GLFramebuffer>(contents.texture.get());
+        if (!contents.framebuffer->valid()) {
+            glass.blurred.reset();
+            return false;
+        }
+    }
+    // Every frame: it only lasts a moment, and what's in it is on its way in.
+    {
+        RenderTarget target(contents.framebuffer.get());
+        RenderViewport targetViewport(expanded, textureScale, target, QPoint());
+        GLFramebuffer::pushFramebuffer(contents.framebuffer.get());
+        glClearColor(0.0, 0.0, 0.0, 0.0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        WindowPaintData plain;
+        plain.setOpacity(1.0);
+        plain.setCrossFadeProgress(data.crossFadeProgress());
+        (void)effects->drawWindow(target, targetViewport, w, PAINT_WINDOW_TRANSFORMED | PAINT_WINDOW_TRANSLUCENT, Region::infinite(), plain);
+        GLFramebuffer::popFramebuffer();
+    }
+    contents.texture->bind();
+    contents.texture->generateMipmaps();
+    contents.texture->unbind();
+
+    const double scale = viewport.scale();
+    const RectF expandedOnScreen = snapToPixels(w->expandedGeometry(), scale);
+    const RectF frameOnScreen = snapToPixels(w->frameGeometry(), scale);
+    RectF visible = expandedOnScreen;
+    visible.moveTopLeft(expandedOnScreen.topLeft() - frameOnScreen.topLeft());
+    WindowQuad quad;
+    quad[0] = WindowVertex(visible.topLeft(), QPointF(0, 0));
+    quad[1] = WindowVertex(visible.topRight(), QPointF(1, 0));
+    quad[2] = WindowVertex(visible.bottomRight(), QPointF(1, 1));
+    quad[3] = WindowVertex(visible.bottomLeft(), QPointF(0, 1));
+
+    RenderGeometry geometry;
+    geometry.appendWindowQuad(quad, scale);
+    const QMatrix4x4 textureMatrix = contents.texture->matrix(NormalizedCoordinates);
+    geometry.postProcessTextureCoordinates(textureMatrix);
+
+    GLVertexBuffer *vbo = GLVertexBuffer::streamingBuffer();
+    vbo->reset();
+    vbo->setAttribLayout(std::span(GLVertexBuffer::GLVertex2DLayout), sizeof(GLVertex2D));
+    const auto map = vbo->map<GLVertex2D>(geometry.size());
+    if (!map) {
+        return false;
+    }
+    geometry.copy(*map);
+    vbo->unmap();
+    vbo->bindArrays();
+
+    ShaderBinder binder(m_blurredShader.get());
+    GLShader *shader = m_blurredShader.get();
+    const qreal rgb = data.brightness() * data.opacity();
+    const qreal alpha = data.opacity();
+    QMatrix4x4 mvp = viewport.projectionMatrix();
+    mvp.translate(std::round(w->x() * scale), std::round(w->y() * scale));
+    const auto toXYZ = renderTarget.colorDescription()->containerColorimetry().toXYZ();
+    shader->setUniform(GLShader::Mat4Uniform::ModelViewProjectionMatrix, mvp * data.toMatrix(scale));
+    shader->setUniform(GLShader::Vec4Uniform::ModulationConstant, QVector4D(rgb, rgb, rgb, alpha));
+    shader->setUniform(GLShader::FloatUniform::Saturation, data.saturation());
+    shader->setUniform(GLShader::Vec3Uniform::PrimaryBrightness, QVector3D(toXYZ(1, 0), toXYZ(1, 1), toXYZ(1, 2)));
+    shader->setColorspaceUniforms(ColorDescription::sRGB, renderTarget.colorDescription(), RenderingIntent::Perceptual);
+
+    // A radius in logical pixels is this far down the texture's smaller copies of itself.
+    const float deepest = contents.levels - 1;
+    const auto lod = [&](float radius) {
+        return std::min(std::log2(1.0f + radius * float(textureScale)), deepest);
+    };
+    // The parts are surface-local; the texture holds the window with its shadow around it.
+    const QPointF surfaceInTexture = w->bufferGeometry().topLeft() - expanded.topLeft();
+    const int count = std::min<int>(glass.contentBlurs.size(), s_mostContentBlurs);
+    for (int i = 0; i < count; ++i) {
+        const QRectF part = glass.contentBlurs[i].rect.translated(surfaceInTexture);
+        const QPointF first = textureMatrix.map(QPointF(part.left() / expanded.width(), part.top() / expanded.height()));
+        const QPointF second = textureMatrix.map(QPointF(part.right() / expanded.width(), part.bottom() / expanded.height()));
+        const QByteArray index = QByteArray::number(i);
+        shader->setUniform(QByteArray("rects[" + index + "]").constData(),
+                           QVector4D(std::min(first.x(), second.x()), std::min(first.y(), second.y()),
+                                     std::max(first.x(), second.x()), std::max(first.y(), second.y())));
+        shader->setUniform(QByteArray("lods[" + index + "]").constData(), lod(glass.contentBlurs[i].radius));
+    }
+    shader->setUniform("rectCount", count);
+    shader->setUniform("everywhere", everywhere > 0 ? lod(everywhere) : 0.0f);
+    // A few pixels past each part's edges, so that its blur doesn't end at a line.
+    const float past = 6.0f;
+    shader->setUniform("feather", QVector2D(past / textureSize.width(), past / textureSize.height()));
+
+    const bool clipping = deviceRegion != Region::infinite();
+    const Region clipRegion = clipping ? viewport.transform().map(deviceRegion, renderTarget.transformedSize()) : Region::infinite();
+    if (clipping) {
+        glEnable(GL_SCISSOR_TEST);
+    }
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    contents.texture->bind();
+    vbo->draw(clipRegion, GL_TRIANGLES, 0, geometry.count(), clipping);
+    contents.texture->unbind();
     glDisable(GL_BLEND);
     if (clipping) {
         glDisable(GL_SCISSOR_TEST);

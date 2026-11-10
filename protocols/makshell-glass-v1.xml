@@ -37,7 +37,7 @@
     their glass is, to pick a text color that stays legible over it.
   </description>
 
-  <interface name="makshell_glass_manager_v1" version="11">
+  <interface name="makshell_glass_manager_v1" version="12">
     <description summary="glass factory">
       Creates glass objects for surfaces.
     </description>
@@ -63,7 +63,7 @@
     </request>
   </interface>
 
-  <interface name="makshell_glass_v1" version="11">
+  <interface name="makshell_glass_v1" version="12">
     <description summary="glass shapes behind a surface">
       Holds a list of glass shapes rendered behind the surface. The list is
       double-buffered state, applied on the next wl_surface.commit, and starts
@@ -257,6 +257,20 @@
         Measuring has a cost, so only ask for it when the answer changes how
         the surface is drawn.
       </description>
+    </request>
+
+    <request name="add_content_blur" since="12">
+      <description summary="blur part of what the surface shows">
+        Blurs the surface's own contents inside a rectangle, in surface-local
+        logical coordinates, by a radius in logical pixels: for something that
+        comes into view out of focus. The glass behind stays as it is. The
+        rectangles are pending state like the shapes, and cleared with them.
+      </description>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+      <arg name="radius" type="fixed"/>
     </request>
 
     <event name="brightness" since="2">

@@ -1,5 +1,6 @@
 <!DOCTYPE RCC><RCC version="1.0">
 <qresource prefix="/effects/makshell/">
+  <file>shaders/blurred.frag</file>
   <file>shaders/downsample.frag</file>
   <file>shaders/glass.frag</file>
   <file>shaders/keyed.frag</file>

@@ -81,6 +81,17 @@ struct Shape {
     QList<QVector4D> droplets;
 };
 
+/// How many parts of a surface can be blurred at once.
+inline constexpr int s_mostContentBlurs = 16;
+
+/// Part of a surface whose own contents are drawn blurred, as they come into view.
+struct ContentBlur {
+    /// Surface-local logical rectangle.
+    QRectF rect;
+    /// In logical pixels.
+    float radius = 0;
+};
+
 class GlassSurface;
 
 /// The makshell_glass_manager_v1 global: hands out a glass object per surface.
@@ -118,6 +129,10 @@ public:
     ~GlassSurface() override;
 
     const QList<Shape> &shapes() const;
+    const QList<ContentBlur> &contentBlurs() const
+    {
+        return m_currentBlurs;
+    }
     bool tracksBrightness() const;
     Appear appear() const
     {
@@ -144,6 +159,7 @@ protected:
     void makshell_glass_v1_add_droplet(Resource *resource, wl_fixed_t x, wl_fixed_t y, wl_fixed_t radius, wl_fixed_t blend) override;
     void makshell_glass_v1_add_rotated_rect(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t radius, uint32_t style, uint32_t box_width, uint32_t box_height, int32_t millidegrees) override;
     void makshell_glass_v1_track_brightness(Resource *resource) override;
+    void makshell_glass_v1_add_content_blur(Resource *resource, int32_t x, int32_t y, int32_t width, int32_t height, wl_fixed_t radius) override;
 
 private:
     void detach();
@@ -152,6 +168,8 @@ private:
     QPointer<KWin::SurfaceInterface> m_surface;
     QList<Shape> m_pending;
     QList<Shape> m_current;
+    QList<ContentBlur> m_pendingBlurs;
+    QList<ContentBlur> m_currentBlurs;
     Appear m_appear;
     bool m_dirty = false;
 
