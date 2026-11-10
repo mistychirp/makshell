@@ -369,6 +369,8 @@ pub enum Message {
     MenuHoverCheck,
     /// Scrolled over Notification Center, in rows.
     NotificationCenterScrolled(f32),
+    /// "Edit Widgets" under the notifications: the widget gallery, in place of Notification Center.
+    NotificationCenterEditWidgets,
 }
 
 /// A popup that's open, or opening: a menu, or the Downloads stack.
@@ -2581,6 +2583,10 @@ impl Shell {
                     .collect();
                 self.open_groups.remove(&app_key);
                 return Task::batch(ids.into_iter().map(|id| self.dismiss_notification(id)));
+            }
+            Message::NotificationCenterEditWidgets => {
+                let close = self.close_popup();
+                return Task::batch([close, self.run_widget_action(widgets::Action::Edit)]);
             }
             Message::NotificationCenterScrolled(amount) => {
                 let rows = notification_center::row_count(&self.notifications, &self.open_groups);

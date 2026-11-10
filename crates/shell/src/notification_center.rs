@@ -36,6 +36,12 @@ const CONTROL_GAP: f32 = 8.0;
 const PEEKS: [f32; 2] = [10.0, 22.0];
 const PEEK_HEIGHT: f32 = 8.0;
 const EMPTY_TOP: f32 = 40.0;
+/// "Edit Widgets", under everything, like Tahoe's: always there, notifications or not.
+const EDIT_WIDGETS: &str = "Edit Widgets";
+const EDIT_HEIGHT: f32 = 22.0;
+const EDIT_PADDING: f32 = 11.0;
+/// How far under "No recent notifications" it goes when there are none.
+const EDIT_UNDER_EMPTY: f32 = 36.0;
 const TITLE_SIZE: f32 = 15.0;
 const PANEL_TITLE_SIZE: f32 = 17.0;
 const PANEL_TITLE_HEIGHT: f32 = 24.0;
@@ -339,6 +345,8 @@ enum Row<'a> {
         /// It stands for a closed group of more than one.
         closed_group: bool,
     },
+    /// The button that opens the widget gallery, after everything else.
+    EditWidgets,
 }
 
 impl Row<'_> {
@@ -348,6 +356,7 @@ impl Row<'_> {
             Row::Title => String::from("title"),
             Row::Header { app_key, .. } => format!("header {app_key}"),
             Row::Card { notification, .. } => card_key(notification.id),
+            Row::EditWidgets => String::from("edit widgets"),
         }
     }
 
@@ -355,6 +364,7 @@ impl Row<'_> {
         match self {
             Row::Title => PANEL_TITLE_HEIGHT,
             Row::Header { .. } => HEADER_HEIGHT,
+            Row::EditWidgets => EDIT_HEIGHT,
             Row::Card {
                 notification,
                 closed_group,
@@ -401,7 +411,17 @@ fn rows<'a>(notifications: &'a [Notification], open: &HashSet<String>) -> Vec<Ro
             });
         }
     }
+    rows.push(Row::EditWidgets);
     rows
+}
+
+fn edit_width() -> f32 {
+    (menu::text_width(EDIT_WIDGETS, 12.0, fonts::REGULAR) + 2.0 * EDIT_PADDING).ceil()
+}
+
+/// Where "Edit Widgets" starts: in the middle of the cards' column.
+fn edit_x() -> f32 {
+    (CARD_X + (CARD_WIDTH - edit_width()) / 2.0).round()
 }
 
 /// The rows that fit, whole, from row `first` down, with where each goes. Scrolling moves by whole
@@ -412,7 +432,12 @@ fn placed<'a>(
     first: usize,
     height: f32,
 ) -> Vec<(Row<'a>, f32)> {
-    let mut y = OVERHANG;
+    // With no notifications, there's a line saying so first.
+    let mut y = if notifications.is_empty() {
+        EMPTY_TOP + EDIT_UNDER_EMPTY
+    } else {
+        OVERHANG
+    };
     let mut placed = Vec::new();
     for row in rows(notifications, open).into_iter().skip(first) {
         if y + row.height() > height {
@@ -479,6 +504,9 @@ pub fn material_shapes(
                 for chip in header_shapes(y) {
                     add(chip, shows);
                 }
+            }
+            Row::EditWidgets => {
+                add(chip_shape(edit_x(), y, edit_width(), EDIT_HEIGHT), shows);
             }
             Row::Card {
                 notification,
@@ -601,6 +629,16 @@ pub fn view<'a>(
                         .y(y - SHADOW_REACH)
                         .into(),
                 );
+            }
+            Row::EditWidgets => {
+                let button = mouse_area(
+                    container(text(EDIT_WIDGETS).size(12).color(CHIP_INK))
+                        .center_x(edit_width())
+                        .center_y(EDIT_HEIGHT)
+                        .style(move |_| panel_style(material, EDIT_HEIGHT / 2.0)),
+                )
+                .on_press(Message::NotificationCenterEditWidgets);
+                layers.push(pin(group(button).opacity(shows)).x(edit_x()).y(y).into());
             }
             Row::Card {
                 notification,
