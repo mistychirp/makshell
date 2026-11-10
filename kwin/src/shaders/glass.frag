@@ -225,6 +225,32 @@ void main(void)
         discard;
     }
 
+    // Most of a shape is its flat middle. There, the lens's surface faces straight up and bends
+    // nothing, so all three of its samples are the same one; what it reflects is a constant share of
+    // the surroundings, and its highlights come to about a millionth; and no edge, rim or shoulder
+    // reaches that far in. So it's one sample, without any of what follows. (A profile of 1 or less
+    // curves all the way in, and goes the long way.)
+    float fit = min(1.0, min(boxSize.x, boxSize.y) / 62.0);
+    float lensWidth = thickness > 0.0
+        ? max(min(bezel * fit, min(cornerRadius, min(boxHalf.x, boxHalf.y))), 1.0)
+        : 0.0;
+    // The widest of the lens's shoulder, a soft edge's fade, a soft rim, and the edge lines and rims,
+    // which go 3 device pixels in, with half of one more for their antialiasing.
+    float reach = max(max(lensWidth, edgeFade), max(1.5, 3.5 / deviceScale)) + 0.5;
+    if (-d > reach && profile > 1.0) {
+        vec4 middle = sampleGeo(geo) * colorMatrix;
+        middle.a = 1.0;
+        middle.rgb *= brightness;
+        middle.rgb = mix(middle.rgb, tint.rgb, tint.a);
+        if (thickness > 0.0) {
+            float straightOn = pow((ior - 1.0) / (ior + 1.0), 2.0);
+            middle.rgb = mix(middle.rgb, min(texture(wide, uv).rgb * edgeGain, vec3(1.0)), straightOn);
+        }
+        middle.rgb += noise() * grain;
+        fragColor = middle * coverage * opacity;
+        return;
+    }
+
     // Outward surface normal from the SDF gradient, which only the lens and rims need: four more
     // distances for every pixel, which plain frosted glass, like an app's window, does without.
     vec2 n = vec2(0.0);
@@ -242,9 +268,8 @@ void main(void)
     vec3 surface = vec3(0.0, 0.0, 1.0);
     float slabHeight = 0.0;
     if (thickness > 0.0) {
-        float fit = min(1.0, min(boxSize.x, boxSize.y) / 62.0);
         // A shoulder wider than the corners would crease along their diagonals.
-        float width = max(min(bezel * fit, min(cornerRadius, min(boxHalf.x, boxHalf.y))), 1.0);
+        float width = lensWidth;
         float across = clamp(1.0 - max(-d, 0.0) / width, 0.0, 1.0);
         float curve = max(1.0 - pow(across, profile), 0.0);
         surface = normalize(vec3(n * shoulder * pow(across, profile - 1.0), pow(curve, (profile - 1.0) / profile)));
