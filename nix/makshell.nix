@@ -50,7 +50,7 @@ let
 in
 rustPlatform.buildRustPackage {
   pname = "makshell";
-  version = "0.1.12";
+  version = "0.1.13";
 
   src = lib.fileset.toSource {
     root = ./..;
