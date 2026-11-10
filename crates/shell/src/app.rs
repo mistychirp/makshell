@@ -3042,6 +3042,10 @@ impl Shell {
                     &target,
                     &menubar::material_shapes(self.menubar_width, self.full_screen.is_some()),
                 );
+                // Starts listening for how bright it is behind: see `material::events`.
+                if self.bar_tracks_brightness {
+                    let _ = material.brightness(&target);
+                }
                 self.menubar_material = Some(target);
             }
             Some(Surface::Dock) => {
@@ -5140,9 +5144,10 @@ impl Shell {
             Subscription::none()
         };
 
-        // Brightness events arrive on the material's queue, which nothing else dispatches.
-        let bar_brightness = if self.bar_tracks_brightness {
-            time::every(Duration::from_millis(250)).map(|_| Message::BarBrightness)
+        // The material's events, dispatched as they come: each time, how bright what's behind the menu
+        // bar has become.
+        let bar_brightness = if self.material.is_some() {
+            material::events().map(|()| Message::BarBrightness)
         } else {
             Subscription::none()
         };

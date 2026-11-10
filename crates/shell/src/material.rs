@@ -6,6 +6,12 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Mutex;
+use std::task::Poll;
+
+use iced_futures::Subscription;
+use iced_futures::futures::channel::mpsc;
+use iced_futures::futures::{SinkExt as _, Stream, StreamExt as _};
 
 use raw_window_handle::RawWindowHandle;
 use wayland_client::backend::ObjectId;
@@ -547,7 +553,14 @@ impl Material {
             return None;
         };
         let mut state = self.state.borrow_mut();
-        if let Err(err) = self.event_queue.borrow_mut().dispatch_pending(&mut state) {
+        // Dispatches what's queued, and asks to be told when more comes: see [`events`].
+        let waker = std::task::Waker::from(std::sync::Arc::new(Arrived));
+        let mut context = std::task::Context::from_waker(&waker);
+        if let Poll::Ready(Err(err)) = self
+            .event_queue
+            .borrow_mut()
+            .poll_dispatch_pending(&mut context, &mut state)
+        {
             log::error!("can't dispatch material events: {err}");
         }
         let luminance = *state.brightness.get(&glass.id())?;
@@ -646,6 +659,45 @@ delegate_noop!(Globals: OrgKdeKwinShadow);
 delegate_noop!(Globals: WlRegion);
 delegate_noop!(Globals: ExtBackgroundEffectSurfaceV1);
 delegate_noop!(Globals: MakshellGlassManagerV1);
+/// Where [`events`] hears that something arrived in the material's queue.
+static ARRIVED: Mutex<Option<mpsc::UnboundedSender<()>>> = Mutex::new(None);
+
+/// Says something arrived in the material's queue. It's called while iced_layershell dispatches
+/// the shared connection on the UI thread, which sorts each event into its queue.
+struct Arrived;
+
+impl std::task::Wake for Arrived {
+    fn wake(self: std::sync::Arc<Self>) {
+        if let Some(sender) = ARRIVED.lock().unwrap().as_ref() {
+            let _ = sender.unbounded_send(());
+        }
+    }
+}
+
+/// Each time something arrives in the material's queue, like a new brightness behind glass, which
+/// [`Material::brightness`] then dispatches. Nothing happens in between: KWin only says when that
+/// changes. The queue is only ever dispatched on the UI thread, which reads the shared socket;
+/// dispatching it anywhere else could sort the UI's own events into its queue where it doesn't look.
+pub fn events() -> Subscription<()> {
+    Subscription::run(event_stream)
+}
+
+fn event_stream() -> impl Stream<Item = ()> {
+    iced_futures::stream::channel(4, |mut output: mpsc::Sender<()>| async move {
+        let (sender, mut arrived) = mpsc::unbounded();
+        *ARRIVED.lock().unwrap() = Some(sender);
+        // Once to start with, which is when the UI thread first asks to be told.
+        if output.send(()).await.is_err() {
+            return;
+        }
+        while arrived.next().await.is_some() {
+            if output.send(()).await.is_err() {
+                return;
+            }
+        }
+    })
+}
+
 impl Dispatch<MakshellGlassV1, ()> for Globals {
     fn event(
         state: &mut Self,
