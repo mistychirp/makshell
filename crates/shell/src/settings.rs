@@ -1767,17 +1767,27 @@ fn redraw_soon() -> Task<Message> {
 
 /// The menu bar's status items, by their keys in the config file, and whether each is shown.
 fn menubar_switches(config: &Config) -> Vec<(&'static str, bool)> {
-    vec![
+    let mut switches = vec![
         ("show_wifi", config.menubar.show_wifi),
         ("show_bluetooth", config.menubar.show_bluetooth),
         ("show_sound", config.menubar.show_sound),
-    ]
+    ];
+    if crate::battery::is_present() {
+        switches.push(("show_battery", config.menubar.show_battery));
+        switches.push((
+            "show_battery_percentage",
+            config.menubar.show_battery_percentage,
+        ));
+    }
+    switches
 }
 
 fn menubar_switch_label(key: &str) -> &'static str {
     match key {
         "show_wifi" => "Wi-Fi",
         "show_bluetooth" => "Bluetooth",
+        "show_battery" => "Battery",
+        "show_battery_percentage" => "Battery Percentage",
         _ => "Sound",
     }
 }

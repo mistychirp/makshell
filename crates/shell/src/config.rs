@@ -110,6 +110,10 @@ pub struct MenuBarConfig {
     pub show_wifi: bool,
     pub show_bluetooth: bool,
     pub show_sound: bool,
+    /// On a laptop.
+    pub show_battery: bool,
+    /// The battery's percentage beside it, which macOS leaves off.
+    pub show_battery_percentage: bool,
 }
 
 impl Default for MenuBarConfig {
@@ -119,6 +123,8 @@ impl Default for MenuBarConfig {
             show_wifi: true,
             show_bluetooth: true,
             show_sound: true,
+            show_battery: true,
+            show_battery_percentage: false,
         }
     }
 }

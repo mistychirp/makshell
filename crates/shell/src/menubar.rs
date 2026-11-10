@@ -9,10 +9,11 @@ use std::fs;
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings};
 use iced_widget::core::text::Wrapping;
 use iced_widget::core::{Alignment, Background, Border, Color, Font, Length, Rectangle};
-use iced_widget::{Space, container, image, mouse_area, row, text};
+use iced_widget::{Space, container, image, mouse_area, row, svg, text};
 
 use crate::app::{Element, Message};
 use crate::apps::App;
+use crate::battery::{self, Battery, Charge};
 use crate::dock::MenuAction;
 use crate::icons::{self, Glyph};
 use crate::kwin::KeyboardLayouts;
@@ -30,6 +31,11 @@ const LOGO_SIZE: f32 = 16.0;
 const TRAY_ICON_SIZE: f32 = 17.0;
 /// Width of a status item on the right, like the keyboard layout.
 const STATUS_WIDTH: f32 = 34.0;
+/// The battery icon, like SF Symbols' at the menu bar's size, and the room around it.
+const BATTERY_ICON_WIDTH: f32 = 27.0;
+const BATTERY_ICON_HEIGHT: f32 = 13.0;
+const BATTERY_PADDING_X: f32 = 7.0;
+const BATTERY_LABEL_GAP: f32 = 5.0;
 const CONTROL_CENTER_WIDTH: f32 = 44.0;
 const INPUT_TEXT_SIZE: f32 = 10.0;
 /// Between the bottom of the bar and the top of a menu hanging from it.
@@ -48,6 +54,8 @@ pub enum Title {
     Input,
     /// A wired connection, shown when there's no Wi-Fi.
     Ethernet,
+    /// A laptop's battery.
+    Battery,
     /// Status items, which open what Control Center's modules for them open to.
     Wifi,
     Bluetooth,
@@ -195,6 +203,10 @@ pub struct Bar<'a> {
     pub wifi: Option<Glyph>,
     pub bluetooth: Option<Glyph>,
     pub sound: Option<Glyph>,
+    /// The battery, on a laptop that shows it.
+    pub battery: Option<&'a Battery>,
+    /// Whether its percentage shows beside it.
+    pub battery_percent: bool,
     pub tray: &'a [tray::Icon],
     /// The names of the focused app's menus.
     pub app_menus: &'a [String],
@@ -239,8 +251,17 @@ impl Bar<'_> {
         titles.push((Title::ControlCenter, rect(x, CONTROL_CENTER_WIDTH)));
         x -= STATUS_WIDTH;
         titles.push((Title::Spotlight, rect(x, STATUS_WIDTH)));
+        if self.wifi.is_some() {
+            x -= STATUS_WIDTH;
+            titles.push((Title::Wifi, rect(x, STATUS_WIDTH)));
+        }
+        // Left of Wi-Fi, as on a Mac.
+        if let Some(battery) = self.battery {
+            let width = self.battery_width(battery);
+            x -= width;
+            titles.push((Title::Battery, rect(x, width)));
+        }
         for (title, shown) in [
-            (Title::Wifi, self.wifi),
             (Title::Bluetooth, self.bluetooth),
             (Title::Sound, self.sound),
         ] {
@@ -273,6 +294,16 @@ impl Bar<'_> {
             left_end += width;
         }
         titles
+    }
+
+    /// The battery's icon, and its percentage before it if that shows.
+    fn battery_width(&self, battery: &Battery) -> f32 {
+        let label = if self.battery_percent {
+            menu::text_width(&percent_label(battery), TEXT_SIZE, fonts::REGULAR) + BATTERY_LABEL_GAP
+        } else {
+            0.0
+        };
+        (label + BATTERY_ICON_WIDTH + 2.0 * BATTERY_PADDING_X).ceil()
     }
 
     fn clock_width(&self) -> f32 {
@@ -419,6 +450,10 @@ pub fn view<'a>(bar: &Bar<'a>) -> Element<'a> {
                 .into(),
             Title::Input => input_badge(bar.input.unwrap_or_default(), ink),
             Title::Ethernet => icons::icon(Glyph::Ethernet, 17.0, ink),
+            Title::Battery => match bar.battery {
+                Some(battery) => battery_item(battery, bar.battery_percent, ink),
+                None => Space::new().into(),
+            },
             Title::Wifi => icons::icon(bar.wifi.unwrap_or(Glyph::Wifi), 16.0, ink),
             Title::Bluetooth => icons::icon(bar.bluetooth.unwrap_or(Glyph::Bluetooth), 16.0, ink),
             Title::Sound => icons::icon(bar.sound.unwrap_or(Glyph::SpeakerHigh), 16.0, ink),
@@ -521,6 +556,49 @@ fn input_badge<'a>(label: &str, ink: Color) -> Element<'a> {
 }
 
 /// The keyboard layout menu: every layout, with a check on the active one.
+/// Like macOS's battery menu: how full it is, what it's running on, and Low Power Mode.
+pub fn battery_menu(battery: &Battery) -> Vec<menu::Entry> {
+    let mut entries = vec![
+        menu::Entry::item("Battery", Message::Nothing)
+            .shortcut(&percent_label(battery))
+            .enabled(false),
+        menu::Entry::item(
+            if battery.is_plugged_in() {
+                "Power Source: Power Adapter"
+            } else {
+                "Power Source: Battery"
+            },
+            Message::Nothing,
+        )
+        .enabled(false),
+    ];
+    let status = match (battery.charge, battery.seconds_left) {
+        (Charge::Discharging, Some(seconds)) => {
+            Some(format!("{} remaining", battery::duration(seconds)))
+        }
+        (Charge::Charging, Some(seconds)) => {
+            Some(format!("{} until full", battery::duration(seconds)))
+        }
+        (Charge::Charging, None) => Some(String::from("Charging")),
+        (Charge::Full, _) => Some(String::from("Fully Charged")),
+        (Charge::OnHold, _) => Some(String::from("Charging On Hold")),
+        (Charge::Discharging, None) => None,
+    };
+    if let Some(status) = status {
+        entries.push(menu::Entry::item(&status, Message::Nothing).enabled(false));
+    }
+    if let Some(on) = battery.low_power {
+        entries.push(menu::Entry::Separator);
+        entries.push(menu::Entry::item("Low Power Mode", Message::LowPowerMode(!on)).checked(on));
+    }
+    entries.push(menu::Entry::Separator);
+    entries.push(menu::Entry::item(
+        "Battery Settings…",
+        Message::ControlSettings("kcm_powerdevilprofilesconfig"),
+    ));
+    entries
+}
+
 pub fn ethernet_menu() -> Vec<menu::Entry> {
     vec![
         menu::Entry::item("Ethernet: Connected", Message::Nothing).enabled(false),
@@ -589,4 +667,69 @@ pub fn input_label(name: &str) -> String {
 
 pub fn format_clock() -> String {
     chrono::Local::now().format("%a %b %-d  %H:%M").to_string()
+}
+
+fn percent_label(battery: &Battery) -> String {
+    format!("{:.0}%", battery.percent.clamp(0.0, 100.0))
+}
+
+/// The battery's icon, with its percentage before it if that shows.
+fn battery_item<'a>(battery: &Battery, percent: bool, ink: Color) -> Element<'a> {
+    let icon = svg(svg::Handle::from_memory(
+        battery_svg(battery, ink).into_bytes(),
+    ))
+    .width(BATTERY_ICON_WIDTH)
+    .height(BATTERY_ICON_HEIGHT);
+    if percent {
+        row![text(percent_label(battery)), icon]
+            .spacing(BATTERY_LABEL_GAP)
+            .align_y(Alignment::Center)
+            .into()
+    } else {
+        icon.into()
+    }
+}
+
+/// Drawn for each state rather than tinted, since its fill can be a color of its own: red when
+/// it's low, yellow in Low Power Mode, as on macOS. Charging, a bolt cuts through it.
+fn battery_svg(battery: &Battery, ink: Color) -> String {
+    let rgb = |color: Color| {
+        format!(
+            "rgb({},{},{})",
+            (color.r * 255.0).round(),
+            (color.g * 255.0).round(),
+            (color.b * 255.0).round()
+        )
+    };
+    let fill = if battery.low_power == Some(true) {
+        Color::from_rgb8(255, 214, 10)
+    } else if battery.is_low() {
+        Color::from_rgb8(255, 69, 58)
+    } else {
+        ink
+    };
+    // The inside of the body is 20 wide; some always shows, however low.
+    let level = (battery.percent.clamp(0.0, 100.0) / 100.0 * 20.0).max(1.5);
+    let charging = matches!(battery.charge, Charge::Charging | Charge::Full);
+    let bolt = "M13.4 0.6L7 7.2h4.2l-1 5.2 6.4-6.6h-4.2z";
+    let (mask, cut) = if charging {
+        (
+            format!(
+                r#"<mask id="m"><rect width="27" height="13" fill="white"/><path d="{bolt}" fill="black" stroke="black" stroke-width="1.8" stroke-linejoin="round"/></mask>"#
+            ),
+            r#" mask="url(#m)""#,
+        )
+    } else {
+        (String::new(), "")
+    };
+    let bolt_path = if charging {
+        format!(r#"<path d="{bolt}" fill="{}"/>"#, rgb(ink))
+    } else {
+        String::new()
+    };
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 27 13">{mask}<g{cut}><rect x="0.5" y="0.5" width="23" height="12" rx="3.6" fill="none" stroke="{ink}" stroke-opacity="0.45"/><rect x="24.6" y="4.3" width="1.8" height="4.4" rx="0.9" fill="{ink}" fill-opacity="0.45"/><rect x="2" y="2" width="{level:.2}" height="9" rx="2" fill="{fill}"/></g>{bolt_path}</svg>"#,
+        ink = rgb(ink),
+        fill = rgb(fill),
+    )
 }

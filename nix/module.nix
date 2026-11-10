@@ -155,6 +155,8 @@ in
 
   config = lib.mkIf cfg.enable {
     services.displayManager.sessionPackages = [ session ];
+    # A laptop's battery, in the menu bar.
+    services.upower.enable = lib.mkDefault true;
 
     environment.systemPackages = [
       # Its desktop entry, which KWin reads to let it manage windows, has to be in the

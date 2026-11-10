@@ -60,7 +60,8 @@ sudo pacman -S --needed base-devel git rust cmake extra-cmake-modules pkgconf \
     wayland libepoxy libdrm vulkan-headers libxkbcommon \
     kscreenlocker xdg-desktop-portal-kde polkit-kde-agent kwallet-pam \
     networkmanager bluez wireplumber python-pillow librsvg curl \
-    systemsettings plasma-nm bluedevil plasma-pa kscreen plasma-desktop
+    systemsettings plasma-nm bluedevil plasma-pa kscreen plasma-desktop \
+    upower power-profiles-daemon
 ```
 
 Then [build and install](#build-and-install). Rebuild makshell after KWin updates (see
@@ -80,7 +81,8 @@ sudo apt install build-essential git cmake extra-cmake-modules pkg-config \
     libwayland-dev libepoxy-dev libdrm-dev libvulkan-dev libxkbcommon-dev \
     kwin-wayland kscreenlocker xdg-desktop-portal-kde polkit-kde-agent-1 \
     network-manager bluez wireplumber python3-pil librsvg2-bin libgtk-3-bin curl \
-    systemsettings plasma-nm bluedevil plasma-pa kscreen plasma-desktop
+    systemsettings plasma-nm bluedevil plasma-pa kscreen plasma-desktop \
+    upower power-profiles-daemon
 ```
 
 Package names shift between releases; if one isn't found, `apt search` for it. Then
@@ -146,6 +148,8 @@ logo = "archlinux-logo"  # icon name or path; defaults to the distro's logo
 show_wifi = true
 show_bluetooth = true
 show_sound = true
+show_battery = true  # on a laptop
+show_battery_percentage = false
 
 [notifications]
 off = ["org.example.noisy"]   # apps whose notifications are turned off

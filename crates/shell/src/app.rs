@@ -36,10 +36,10 @@ use crate::material::{self, Material, MaterialSurface};
 use crate::notifications::{self, Notification};
 use crate::places::{self, Place};
 use crate::{
-    appearance, appmenu, arrange, audio, autostart, bluetooth, brightness, clip_store, clipboard,
-    control, dbusmenu, desktop, dnd, dock, fan, fonts, full_screen, hud, icons, launcher, media,
-    menu, menubar, network, notification_center, portal, running, spotlight, tray, wallpaper,
-    widgets,
+    appearance, appmenu, arrange, audio, autostart, battery, bluetooth, brightness, clip_store,
+    clipboard, control, dbusmenu, desktop, dnd, dock, fan, fonts, full_screen, hud, icons,
+    launcher, media, menu, menubar, network, notification_center, portal, running, spotlight, tray,
+    wallpaper, widgets,
 };
 
 pub type Element<'a> = iced_widget::core::Element<'a, Message, Theme, Renderer>;
@@ -112,6 +112,9 @@ pub enum Message {
     IconThemesBuilt(icon_themes::Built),
     WindowsChanged(Vec<WindowInfo>),
     KeyboardLayoutsChanged(KeyboardLayouts),
+    /// The battery, or none, every time it changes.
+    BatteryChanged(Option<battery::Battery>),
+    LowPowerMode(bool),
     /// A layout was chosen in the keyboard layout menu; carries its index.
     SwitchLayout(usize),
     /// The Control Center's keyboard module was pressed.
@@ -601,6 +604,10 @@ struct Shell {
     show_wifi: bool,
     show_bluetooth: bool,
     show_sound: bool,
+    show_battery: bool,
+    show_battery_percent: bool,
+    /// A laptop's battery.
+    battery: Option<battery::Battery>,
     /// When each app that's muted gets its banners back. It isn't kept for the next session.
     muted_apps: HashMap<String, Instant>,
     notifications_off: Vec<String>,
@@ -843,6 +850,9 @@ impl Shell {
             show_wifi: config.menubar.show_wifi,
             show_bluetooth: config.menubar.show_bluetooth,
             show_sound: config.menubar.show_sound,
+            show_battery: config.menubar.show_battery,
+            show_battery_percent: config.menubar.show_battery_percentage,
+            battery: None,
             muted_apps: HashMap::new(),
             notifications_off: config.notifications.off.clone(),
             center_scroll: 0.0,
@@ -1084,6 +1094,19 @@ impl Shell {
                         .any(|item| item.app.id == *app_id && item.has_windows())
                 });
                 return Task::batch([self.relayout_dock(), captures, full_screen]);
+            }
+            Message::BatteryChanged(battery) => {
+                // An open battery menu shows what it was opened with; it's quick to open again.
+                self.battery = battery;
+            }
+            Message::LowPowerMode(on) => {
+                if let Some(battery) = &mut self.battery {
+                    battery.low_power = Some(on);
+                }
+                return Task::batch([
+                    Task::future(battery::set_low_power(on)).discard(),
+                    self.close_popup(),
+                ]);
             }
             Message::KeyboardLayoutsChanged(layouts) => {
                 self.input_label = (layouts.names.len() > 1)
@@ -2664,6 +2687,10 @@ impl Shell {
             }
             menubar::Title::Spotlight => return self.toggle_spotlight(),
             menubar::Title::Ethernet => menubar::ethernet_menu(),
+            menubar::Title::Battery => match &self.battery {
+                Some(battery) => menubar::battery_menu(battery),
+                None => return Task::none(),
+            },
             // Read first, so that it opens at the size of what it lists.
             menubar::Title::Wifi | menubar::Title::Bluetooth | menubar::Title::Sound => {
                 if self.popup.is_some() {
@@ -3308,6 +3335,8 @@ impl Shell {
                         Glyph::SpeakerHigh
                     }
                 }),
+            battery: self.battery.as_ref().filter(|_| self.show_battery),
+            battery_percent: self.show_battery_percent,
             tray: &self.tray,
             app_menus: &self.app_menu_titles,
             lights: self.full_screen.as_ref().map(|open| open.lights_hovered),
@@ -4122,6 +4151,8 @@ impl Shell {
         self.show_wifi = config.menubar.show_wifi;
         self.show_bluetooth = config.menubar.show_bluetooth;
         self.show_sound = config.menubar.show_sound;
+        self.show_battery = config.menubar.show_battery;
+        self.show_battery_percent = config.menubar.show_battery_percentage;
         let mut tasks = vec![
             Task::perform(appearance::refresh(), Message::AppearanceApplied),
             // In case macOS icons were just turned on.
@@ -5087,6 +5118,7 @@ impl Shell {
             icon_check,
             kwin::windows().map(Message::WindowsChanged),
             kwin::keyboard_layouts().map(Message::KeyboardLayoutsChanged),
+            battery::watch().map(Message::BatteryChanged),
             time::every(Duration::from_secs(1)).map(|_| Message::Tick),
             iced_futures::event::listen_with(|event, status, id| match event {
                 Event::Window(window::Event::Opened { size, .. }) => {

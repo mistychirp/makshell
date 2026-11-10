@@ -8,6 +8,7 @@ mod arrange;
 mod audio;
 mod autostart;
 mod banners;
+mod battery;
 mod bluetooth;
 mod brightness;
 mod clip_store;
