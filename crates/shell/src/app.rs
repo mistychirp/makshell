@@ -112,6 +112,8 @@ pub enum Message {
     IconThemesBuilt(icon_themes::Built),
     WindowsChanged(Vec<WindowInfo>),
     KeyboardLayoutsChanged(KeyboardLayouts),
+    /// Its own surfaces went with a screen: time to start again.
+    RestartForScreens,
     /// The battery, or none, every time it changes.
     BatteryChanged(Option<battery::Battery>),
     LowPowerMode(bool),
@@ -612,6 +614,8 @@ struct Shell {
     show_sound: bool,
     show_battery: bool,
     show_battery_percent: bool,
+    /// It's about to start again, its surfaces having gone with a screen.
+    restarting: bool,
     /// A laptop's battery.
     battery: Option<battery::Battery>,
     /// When each app that's muted gets its banners back. It isn't kept for the next session.
@@ -651,6 +655,9 @@ const DRAG_THRESHOLD: f32 = 4.0;
 
 /// How long a launch bounces before the dock gives up waiting for a window.
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(8);
+/// How long after its screen went away the shell starts again: long enough for a display that's
+/// being reconnected to be back, so it starts on that.
+const SCREENS_SETTLE: Duration = Duration::from_secs(2);
 
 /// The screen's height until the wallpaper's surface says, if there is one.
 const FALLBACK_SCREEN_HEIGHT: f32 = 700.0;
@@ -858,6 +865,7 @@ impl Shell {
             show_sound: config.menubar.show_sound,
             show_battery: config.menubar.show_battery,
             show_battery_percent: config.menubar.show_battery_percentage,
+            restarting: false,
             battery: None,
             muted_apps: HashMap::new(),
             notifications_off: config.notifications.off.clone(),
@@ -2593,6 +2601,24 @@ impl Shell {
                 self.center_scroll =
                     (self.center_scroll - amount).clamp(0.0, rows.saturating_sub(1) as f32);
             }
+            Message::SurfaceClosed(id)
+                if matches!(
+                    self.surfaces.get(&id),
+                    Some(Surface::Wallpaper | Surface::Desktop | Surface::MenuBar | Surface::Dock)
+                ) =>
+            {
+                // KWin closes what's on a screen when the screen goes away, like a display being
+                // unplugged and plugged back in. The shell can't do without these, so it starts again
+                // once the screens have settled, and the session brings it back on what's there.
+                if !self.restarting {
+                    self.restarting = true;
+                    log::warn!("KWin closed one of the shell's own surfaces; starting again");
+                    return Task::perform(tokio::time::sleep(SCREENS_SETTLE), |()| {
+                        Message::RestartForScreens
+                    });
+                }
+            }
+            Message::RestartForScreens => std::process::exit(icon_themes::RESTART),
             Message::SurfaceClosed(id) => {
                 self.surfaces.remove(&id);
                 if self.hud.as_ref().is_some_and(|open| open.id == id) {

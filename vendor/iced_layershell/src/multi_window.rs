@@ -611,10 +611,14 @@ where
         ev: &mut WindowState<IcedId>,
         layer_shell_id: Option<LayerShellId>,
     ) {
-        let Some(iced_id) = layer_shell_id
-            .and_then(|lid| ev.get_unit_with_id(lid))
-            .and_then(|layer_shell_window| layer_shell_window.get_binding().copied())
-        else {
+        // makshell patch: by the time the compositor's closing a surface gets here, as it does when
+        // the surface's screen goes away, layershellev has let go of the surface and its binding, so
+        // the window is found by its alias instead. Without this, the app never hears of it.
+        let Some(iced_id) = layer_shell_id.and_then(|lid| {
+            ev.get_unit_with_id(lid)
+                .and_then(|layer_shell_window| layer_shell_window.get_binding().copied())
+                .or_else(|| self.window_manager.get_alias(lid).map(|(iced_id, _)| iced_id))
+        }) else {
             return;
         };
         self.cached_layer_dimensions.remove(&iced_id);
