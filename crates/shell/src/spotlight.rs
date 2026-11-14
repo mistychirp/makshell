@@ -750,27 +750,34 @@ impl Spotlight {
             container(Space::new()).width(width).height(height).into(),
             pin(catcher).x(rect.x).y(rect.y).into(),
         ];
-        // They can't be pressed where they can't be seen, which is under the panel. Each rides its
-        // drop out of the field, growing with it, like Tahoe's.
-        if icons_show > 0.0 {
-            let icon_size = 22.0 * self.chip_size_now();
-            for (index, (mode, glyph)) in [
-                (Mode::Apps, Glyph::Grid),
-                (Mode::Files, Glyph::Folder),
-                (Mode::Actions, Glyph::Stacks),
-                (Mode::Clipboard, Glyph::Clipboard),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let center = self.chip_center_now(field, index);
-                layers.push(
-                    pin(group(chip(mode, glyph, icon_size)).opacity(icons_show))
-                        .x(center.x - CHIP_SIZE / 2.0)
-                        .y(center.y - CHIP_SIZE / 2.0)
-                        .into(),
-                );
-            }
+        // Each rides its drop out of the field, growing with it, like Tahoe's. They can't be pressed
+        // where they can't be seen, which is under the panel, so then they're nothing, but always
+        // there: the field after them keeps the keyboard only while it's in the same place in the
+        // tree, and loses it whenever the layers before it come or go.
+        let icon_size = 22.0 * self.chip_size_now();
+        for (index, (mode, glyph)) in [
+            (Mode::Apps, Glyph::Grid),
+            (Mode::Files, Glyph::Folder),
+            (Mode::Actions, Glyph::Stacks),
+            (Mode::Clipboard, Glyph::Clipboard),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let center = self.chip_center_now(field, index);
+            let content: Element<'a> = if icons_show > 0.0 {
+                group(chip(mode, glyph, icon_size))
+                    .opacity(icons_show)
+                    .into()
+            } else {
+                Space::new().into()
+            };
+            layers.push(
+                pin(content)
+                    .x(center.x - CHIP_SIZE / 2.0)
+                    .y(center.y - CHIP_SIZE / 2.0)
+                    .into(),
+            );
         }
         layers.push(
             pin(group(body).opacity(shows).clip(clip))
